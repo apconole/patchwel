@@ -354,9 +354,9 @@ a comment line toggles it open to show the full text."
               (when expanded
                 (dolist (content-line (split-string content "\n"))
                   (insert (format "         %s\n" content-line)))
-                (insert "\n"))))))
-      (goto-char (point-min))
-      (forward-line (1- line))
+                (insert "\n")))))
+        (goto-char (point-min))
+        (forward-line (1- line)))
       (patchwork-series-detail-mode)
       (setq patchwork-series-detail--server-url server-url)
       (setq patchwork-series-detail--id series-id))
