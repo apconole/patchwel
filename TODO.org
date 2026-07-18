@@ -1,0 +1,71 @@
+#+TITLE: patchwel — planned features
+#+TODO: TODO IN-PROGRESS | DONE
+#+OPTIONS: toc:2 num:nil
+
+Tracks high-level features not yet implemented. Each entry is a goal
+and design notes, not a committed implementation plan — flesh out
+further when work actually starts.
+
+* TODO Asynchronous/offline-tolerant patch delegation
+
+Setting a patch's delegate (~patchwork-api-set-delegate~) is currently
+a direct, synchronous API call: if the server is unreachable, the
+request just fails. Instead:
+
+- When a delegate change is requested but the server call fails
+  (timeout, connection error, etc.), save the intended change locally
+  (patch id, server, desired delegate, and the delegate value we
+  observed at request time) rather than discarding it.
+- On each subsequent successful sync/connection to that server, retry
+  any pending delegate changes.
+- Before applying a queued change, re-check the patch's *current*
+  delegate against what we observed when the change was queued. If it
+  has changed in the meantime (someone else delegated it, or changed
+  it another way), do not blindly overwrite — the change is stale and
+  needs to surface as a conflict rather than applying silently.
+- Needs a small local queue (a new sqlite table, most likely) and a
+  place to report queued/failed/conflicting changes back to the user.
+
+* TODO Per-series sync from the series detail buffer
+
+Right now, refreshing (~g~) only exists at the whole
+server/project level via ~patchwork-cache-sync~. Add a sync path that
+can be triggered from a ~*patchwork-series-<server>-<id>*~ detail
+buffer and only re-fetches that one series (and its patches, comments,
+checks) rather than the server/project it belongs to. Useful for
+pulling in a known, single update without waiting on or triggering a
+full project-level sync.
+
+* TODO Threaded comment view across a series' patches
+
+The series detail buffer currently lists each patch's comments as a
+flat, chronological list per patch. Instead, render all comments
+across every patch in the series in a threaded fashion (reply
+relationships, not just date order) so a review conversation reads the
+way it would in a mail client or code review tool. Needs figuring out
+how reply/threading info is actually derivable from Patchwork's data
+(In-Reply-To/References headers if exposed via the API, or comment
+ordering/quoting heuristics if not).
+
+* TODO Apply a series and start a review
+
+Extend beyond ~patchwork-apply-series~ (which just applies the patches
+to a git tree) to also kick off a review using whatever review
+tooling is available/configured in the user's Emacs (e.g. a
+configurable list of review backends/modes to try, since this will
+vary a lot by setup — diff-mode, magit, forge, code-review.el, or
+something project-specific). Needs a pluggable
+"start a review for these applied commits" hook rather than hardcoding
+one tool.
+
+* TODO Reply to a comment as a mail message
+
+From a comment shown in a series/patch detail buffer, be able to
+reply to it the same way replying to an email works elsewhere in
+Emacs: spawn a ~message-mode~ buffer pre-filled as if replying to that
+comment's original email (To/Cc/Subject/In-Reply-To/References,
+quoted body), the way Gnus sets up a reply from an inbox message.
+Needs the comment's underlying mail headers/msgid (Patchwork's API
+exposes some of this already for patches/covers; need to confirm
+what's available for individual comments) and probably needs to reuse
+Gnus/message.el's reply-building machinery rather than reinventing it.
