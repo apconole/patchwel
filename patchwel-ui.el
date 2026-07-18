@@ -283,9 +283,22 @@ are currently active (see `patchwork-series-set-filter')."
 (defvar-local patchwork-series-detail--id nil
   "Series id that the current detail buffer is showing.")
 
+(defvar-local patchwork-series-detail--expanded-comments nil
+  "Hash table of comment id -> non-nil if that comment is expanded to
+show its full text, in the current detail buffer.  Persists across
+`g' refreshes of the same buffer.")
+
+(defun patchwork-series-detail--comment-at-point ()
+  "Return the comment id at point in a detail buffer, or nil."
+  (get-text-property (line-beginning-position) 'patchwork-comment-id))
+
 (defun patchwork-view-series-details (server-url series-id)
   "Show a detail buffer for SERIES-ID on SERVER-URL.
-Displays metadata, tag/check counters, and its patches."
+Displays metadata, tag/check counters, its patches, and each patch's
+comments -- collapsed to a one-line summary by default; RET or TAB on
+a comment line toggles it open to show the full text."
+  (unless (hash-table-p patchwork-series-detail--expanded-comments)
+    (setq patchwork-series-detail--expanded-comments (make-hash-table :test #'eql)))
   (let* ((series (patchwork-db-get-series server-url series-id))
          (patches (patchwork-db-get-series-patches server-url series-id))
          (buffer (get-buffer-create
@@ -295,7 +308,8 @@ Displays metadata, tag/check counters, and its patches."
     (unless series
       (error "No cached series %s on %s" series-id server-url))
     (with-current-buffer buffer
-      (let ((inhibit-read-only t))
+      (let ((inhibit-read-only t)
+            (line (line-number-at-pos)))
         (erase-buffer)
         (insert (format "%s\n" (or (plist-get series :name) "(untitled series)")))
         (insert (make-string (min 70 (max 8 (length (or (plist-get series :name) ""))))
@@ -326,18 +340,46 @@ Displays metadata, tag/check counters, and its patches."
                           (or (plist-get patch :state) "")
                           (or (plist-get patch :name) "")))
           (dolist (comment (patchwork-db-get-comments server-url (plist-get patch :id)))
-            (insert (format "       [%s] %s: %s\n"
-                            (patchwork-series--format-date (plist-get comment :date))
-                            (or (plist-get comment :author) "")
-                            (car (split-string (or (plist-get comment :content) "") "\n")))))))
+            (let* ((comment-id (plist-get comment :id))
+                   (expanded (gethash comment-id patchwork-series-detail--expanded-comments))
+                   (content (or (plist-get comment :content) ""))
+                   (summary (car (split-string content "\n"))))
+              (insert (propertize
+                       (format "       [%s] [%s] %s: %s\n"
+                               (if expanded "-" "+")
+                               (patchwork-series--format-date (plist-get comment :date))
+                               (or (plist-get comment :author) "")
+                               summary)
+                       'patchwork-comment-id comment-id))
+              (when expanded
+                (dolist (content-line (split-string content "\n"))
+                  (insert (format "         %s\n" content-line)))
+                (insert "\n"))))))
       (goto-char (point-min))
+      (forward-line (1- line))
       (patchwork-series-detail-mode)
       (setq patchwork-series-detail--server-url server-url)
       (setq patchwork-series-detail--id series-id))
     (switch-to-buffer buffer)))
 
+(defun patchwork-series-detail-toggle-comment ()
+  "Toggle the comment at point between collapsed and fully expanded."
+  (interactive)
+  (let ((comment-id (patchwork-series-detail--comment-at-point)))
+    (if (null comment-id)
+        (message "No comment on this line")
+      (unless (hash-table-p patchwork-series-detail--expanded-comments)
+        (setq patchwork-series-detail--expanded-comments (make-hash-table :test #'eql)))
+      (if (gethash comment-id patchwork-series-detail--expanded-comments)
+          (remhash comment-id patchwork-series-detail--expanded-comments)
+        (puthash comment-id t patchwork-series-detail--expanded-comments))
+      (patchwork-view-series-details patchwork-series-detail--server-url
+                                      patchwork-series-detail--id))))
+
 (defvar patchwork-series-detail-mode-map
   (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'patchwork-series-detail-toggle-comment)
+    (define-key map (kbd "TAB") #'patchwork-series-detail-toggle-comment)
     (define-key map "g" #'patchwork-series-detail-refresh)
     (define-key map "a" #'patchwork-series-detail-apply)
     (define-key map "q" #'quit-window)
