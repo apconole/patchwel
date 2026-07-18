@@ -297,8 +297,6 @@ show its full text, in the current detail buffer.  Persists across
 Displays metadata, tag/check counters, its patches, and each patch's
 comments -- collapsed to a one-line summary by default; RET or TAB on
 a comment line toggles it open to show the full text."
-  (unless (hash-table-p patchwork-series-detail--expanded-comments)
-    (setq patchwork-series-detail--expanded-comments (make-hash-table :test #'eql)))
   (let* ((series (patchwork-db-get-series server-url series-id))
          (patches (patchwork-db-get-series-patches server-url series-id))
          (buffer (get-buffer-create
@@ -308,6 +306,8 @@ a comment line toggles it open to show the full text."
     (unless series
       (error "No cached series %s on %s" series-id server-url))
     (with-current-buffer buffer
+      (unless (hash-table-p patchwork-series-detail--expanded-comments)
+        (setq patchwork-series-detail--expanded-comments (make-hash-table :test #'eql)))
       (let ((inhibit-read-only t)
             (line (line-number-at-pos)))
         (erase-buffer)
