@@ -6,6 +6,8 @@
 ;; Version: 0.0.1
 ;; Package-Requires: ((emacs "29.1"))
 
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Commentary:
 ;;
 ;; Patchwork is a patch tracking and management interface for mailing list

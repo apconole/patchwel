@@ -1,0 +1,170 @@
+#+TITLE: patchwel — an Emacs interface to Patchwork
+#+OPTIONS: toc:2 num:nil
+
+* About
+
+patchwel is an Emacs package for working with [[https://patchwork.readthedocs.io/][Patchwork]], the patch
+tracking and review tool used by many mailing-list-based projects (the
+Linux kernel, QEMU, Open vSwitch, DPDK, and others). Its goal is to
+bring patch review and mailing-list patch management into Emacs
+directly: browsing series and their review status, delegating and
+tracking state, and applying patches to a local git tree, without
+leaving the editor for a browser tab.
+
+patchwel talks to one or more Patchwork servers' REST APIs, caches
+what it fetches in a local SQLite database, and presents it as a
+groupable, filterable listing buffer.
+
+* License
+
+patchwel is free software, licensed under the GNU General Public
+License, version 3 (GPLv3) or (at your option) any later version. See
+[[https://www.gnu.org/licenses/gpl-3.0.en.html]] for the full license
+text.
+
+* Requirements
+
+- Emacs 29.1 or later (patchwel uses the built-in ~sqlite.el~, which
+  requires Emacs to have been built with SQLite support).
+- Network access to whichever Patchwork server(s) you configure.
+
+* Installation
+
+Put the ~patchwel-*.el~ files somewhere on your ~load-path~ and
+require the package:
+
+#+begin_src emacs-lisp
+(add-to-list 'load-path "/path/to/patchwel")
+(require 'patchwel)
+#+end_src
+
+* Configuration
+
+All configuration lives under the ~patchwork~ customize group
+(~M-x customize-group RET patchwork RET~), or can be set directly with
+~setq~ in your init file.
+
+** ~patchwork-servers~
+
+The central setting: a list of Patchwork servers to sync and browse.
+Each entry is a plist with ~:url~, ~:token~, and ~:projects~:
+
+#+begin_src emacs-lisp
+(setq patchwork-servers
+      '((:url "https://patchwork.ozlabs.org/api" :token nil
+         :projects ("openvswitch"))
+        (:url "https://patchwork.kernel.org/api" :token nil
+         :projects ("netdevbpf"))
+        (:url "https://patches.dpdk.org/api" :token "your-api-token"
+         :projects nil)))
+#+end_src
+
+- ~:url~ — base API URL for the server, no trailing slash.
+- ~:token~ — API token for this server, or ~nil~ for anonymous,
+  read-only access. Required if you want to set delegates/state.
+- ~:projects~ — list of project slugs (or ids) to sync on this server,
+  or ~nil~ to sync every project visible to that server/token.
+
+For any server that hosts many unrelated projects (~patchwork.ozlabs.org~
+and ~patchwork.kernel.org~ both host hundreds), set ~:projects~
+explicitly rather than leaving it ~nil~ — otherwise every sync walks
+the server's entire, mostly-irrelevant event/series history instead of
+just the projects you care about.
+
+** Other options
+
+| Variable                        | Default                          | Purpose                                                              |
+|----------------------------------+-----------------------------------+-----------------------------------------------------------------------|
+| ~patchwork-local-db-file~        | ~~/.cache/patchwel/patchwork.db~  | Path to the local SQLite cache.                                      |
+| ~patchwork-cache-ttl~            | ~300~ (seconds)                   | How fresh the cache must be before a sync is skipped.                |
+| ~patchwork-sync-lookback-days~   | ~30~                              | History pulled on a server/project's first sync (and on forced/fallback full resyncs). |
+| ~patchwork-sync-timeout~         | ~5~ (seconds)                     | Per-HTTP-request timeout; a slow/unreachable server is skipped rather than blocking the whole sync. |
+| ~patchwork-page-size~            | ~100~                             | Results requested per page from the API.                             |
+| ~patchwork-series-buffer-name~   | ~*patchwork-series*~              | Name of the main listing buffer.                                     |
+| ~patchwork-tag-names~            | ~("ack" "review" "test" "fixes")~ | Trailer tags counted from comment text (Acked-by/Reviewed-by/Tested-by/Fixes). |
+| ~patchwork-default-state-filter~ | ~("new" "assigned" "under-review")~ | States shown in the listing buffer until you change the filter at runtime. Set to ~nil~ to show every state. Patchwork's actual state names vary by deployment, so adjust this to match yours. |
+
+* Usage
+
+~M-x patchwork-show-series~ syncs every configured server/project
+(subject to ~patchwork-cache-ttl~) and opens the main listing buffer.
+Series are grouped under collapsible ~[+]~/~[-]~ headers, one per
+server/project pair, each showing title, author, submitted date,
+comment count, Ack/Review/Test/Fixes tag counts, CI check
+Success/Warning/Failure counts, assignee, and state.
+
+** Keybindings — series listing buffer
+
+| Key       | Command                          | Action                                                        |
+|-----------+-----------------------------------+----------------------------------------------------------------|
+| ~RET~     | ~patchwork-series-dwim~          | On a group header: toggle it. On a series row: open its detail buffer. |
+| ~TAB~     | ~patchwork-series-dwim~          | Same as ~RET~.                                                |
+| ~g~       | ~patchwork-series-refresh~       | Re-sync. With a prefix argument (~C-u g~), force a full resync (bypassing both the TTL and incremental/events-based sync) rather than the usual incremental sync. |
+| ~a~       | ~patchwork-series-apply-at-point~ | Apply every patch in the series at point to a git repository you choose. |
+| ~f~       | ~patchwork-series-set-filter~    | Interactively edit the state/server/project/author filter, prefilled with the current values. |
+| ~F~       | ~patchwork-series-reset-filter~  | Reset the filter back to ~patchwork-default-state-filter~.    |
+| ~+~       | ~patchwork-series-expand-all~    | Expand every group.                                           |
+| ~-~       | ~patchwork-series-collapse-all~  | Collapse every group.                                         |
+| ~q~       | ~quit-window~                    | Close the buffer.                                             |
+
+** Keybindings — series detail buffer
+
+| Key | Command                          | Action                                                    |
+|-----+-----------------------------------+--------------------------------------------------------------|
+| ~g~ | ~patchwork-series-detail-refresh~ | Redraw this series' detail (title, author, tags, checks, patches, comments). |
+| ~a~ | ~patchwork-series-detail-apply~  | Apply every patch in this series to a git repository you choose. |
+| ~q~ | ~quit-window~                    | Close the buffer.                                         |
+
+Note: delegating a patch and changing its state are supported at the
+API layer (~patchwork-api-set-delegate~, ~patchwork-api-set-state~ in
+~patchwel-api.el~), but neither is yet wired to an interactive command
+or keybinding — that's on the roadmap, not something you can drive
+from the listing buffer today.
+
+** Applying patches to a git tree
+
+Beyond the ~a~ keybindings above, the following are available as
+~M-x~ commands (each downloads the patch's mbox from Patchwork on
+demand rather than requiring it to already be cached locally):
+
+- ~patchwork-apply-patch~ — apply a single patch.
+- ~patchwork-apply-series~ — apply every patch in a series, in order.
+- ~patchwork-undo-patch~ — reverse-apply a previously-applied patch.
+
+* Background sync via cron
+
+The interactive listing buffer only syncs when you ask it to (opening
+it, or ~g~/~C-u g~). For a fresher cache without having to remember to
+refresh, ~patchwork-cron-sync.el~ is a small, self-contained script you
+can drive from a crontab with a headless Emacs, independent of any
+interactive session:
+
+#+begin_src sh
+*/5 * * * * /usr/bin/emacs --batch -l /path/to/patchwel/patchwork-cron-sync.el >> ~/.cache/patchwel/sync.log 2>&1
+#+end_src
+
+Before using it:
+
+1. Edit the ~patchwork-servers~ (and any other ~patchwork-*~
+   settings) near the bottom of ~patchwork-cron-sync.el~ to match your
+   real interactive configuration. It deliberately does *not* load your
+   normal ~init.el~ — init files often assume a display, are slow to
+   load, or do things that only make sense interactively — so keep the
+   two configurations in sync by hand, or factor the shared settings
+   into one file both ~load~.
+2. Point the crontab entry at wherever you've actually put the
+   ~patchwel~ source directory and ~patchwork-cron-sync.el~.
+
+Notes on how this interacts with an interactive session:
+
+- Running the cron job more often than ~patchwork-cache-ttl~ is
+  harmless — a sync that finds the cache still fresh does no network
+  work at all, so the cron interval just bounds worst-case staleness,
+  not request volume.
+- The local SQLite database is opened with WAL journaling and a busy
+  timeout, so the cron process and an interactive Emacs session can
+  read and write it concurrently without "database is locked" errors.
+- The interactive buffer won't redraw on its own just because the
+  cache changed underneath it — you still need ~g~ to re-query and
+  redraw, but that ~g~ will be fast, since the network work was
+  already done by cron.

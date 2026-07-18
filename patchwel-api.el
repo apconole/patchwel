@@ -1,10 +1,19 @@
 ;;; patchwel-api.el --- HTTP client for the Patchwork REST API -*- lexical-binding: t; -*-
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Code:
 
 (require 'url)
 (require 'json)
 (require 'mail-parse)
 (require 'patchwel-config)
+
+(define-error 'patchwork-api-error "Patchwork API error")
+(define-error 'patchwork-api-http-error
+  "Patchwork API returned a non-2xx HTTP status" 'patchwork-api-error)
+(define-error 'patchwork-api-timeout-error
+  "Patchwork API request timed out" 'patchwork-api-error)
 
 (defun patchwork-api--build-query (params)
   "Build a query string from the PARAMS alist."
@@ -48,13 +57,15 @@
             (encode-coding-string (json-encode params) 'utf-8)))
          (buffer (url-retrieve-synchronously url t t patchwork-sync-timeout)))
     (unless buffer
-      (error "Patchwork API request to %s timed out after %ss" url patchwork-sync-timeout))
+      (signal 'patchwork-api-timeout-error (list url patchwork-sync-timeout)))
     (unwind-protect
         (with-current-buffer buffer
           (goto-char (point-min))
           (unless (looking-at "HTTP/[0-9.]+ 2[0-9][0-9]")
-            (error "Patchwork API error for %s: %s" url
-                   (buffer-substring-no-properties (point) (line-end-position))))
+            (let* ((status-line (buffer-substring-no-properties (point) (line-end-position)))
+                   (status (and (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" status-line)
+                                (string-to-number (match-string 1 status-line)))))
+              (signal 'patchwork-api-http-error (list status url status-line))))
           (let ((next (patchwork-api--next-link buffer)))
             (search-forward "\n\n")
             (cons (json-parse-buffer :object-type 'plist :array-type 'list
@@ -89,13 +100,15 @@ paginated list, all pages are fetched and concatenated."
   (let* ((url-request-extra-headers (patchwork-api--headers server))
          (buffer (url-retrieve-synchronously url t t patchwork-sync-timeout)))
     (unless buffer
-      (error "Request to %s timed out after %ss" url patchwork-sync-timeout))
+      (signal 'patchwork-api-timeout-error (list url patchwork-sync-timeout)))
     (unwind-protect
         (with-current-buffer buffer
           (goto-char (point-min))
           (unless (looking-at "HTTP/[0-9.]+ 2[0-9][0-9]")
-            (error "Error fetching %s: %s" url
-                   (buffer-substring-no-properties (point) (line-end-position))))
+            (let* ((status-line (buffer-substring-no-properties (point) (line-end-position)))
+                   (status (and (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" status-line)
+                                (string-to-number (match-string 1 status-line)))))
+              (signal 'patchwork-api-http-error (list status url status-line))))
           (search-forward "\n\n")
           (buffer-substring-no-properties (point) (point-max)))
       (kill-buffer buffer))))
@@ -111,6 +124,12 @@ paginated list, all pages are fetched and concatenated."
 (defun patchwork-api-get-series (server series-id)
   "Get detailed information for SERIES-ID on SERVER."
   (patchwork-api-request server (format "/series/%s/" series-id) 'get))
+
+(defun patchwork-api-get-cover (server cover-id)
+  "Get detailed information for the cover letter COVER-ID on SERVER.
+Like a patch, its response includes a :series field (a list of series
+references) naming which series it belongs to."
+  (patchwork-api-request server (format "/covers/%s/" cover-id) 'get))
 
 (defun patchwork-api-list-patches (server &optional project params)
   "List patches on SERVER, optionally scoped to PROJECT, with extra query PARAMS."

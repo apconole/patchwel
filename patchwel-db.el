@@ -1,4 +1,7 @@
 ;;; patchwel-db.el --- Local SQLite cache for patchwel -*- lexical-binding: t; -*-
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Code:
 
 (require 'sqlite)
@@ -78,10 +81,16 @@ since the database only ever holds re-fetchable cache data.")
   "SQL statements used to create the local cache schema.")
 
 (defun patchwork-db-connection ()
-  "Return the open connection to `patchwork-local-db-file', opening it if needed."
+  "Return the open connection to `patchwork-local-db-file', opening it if needed.
+Sets WAL journaling and a busy timeout so a background updater (e.g. a
+cron job running `emacs --batch' against the same file) and an
+interactive Emacs session can read and write concurrently without
+\"database is locked\" errors."
   (unless (and patchwork-db--connection (sqlitep patchwork-db--connection))
     (make-directory (file-name-directory patchwork-local-db-file) t)
     (setq patchwork-db--connection (sqlite-open patchwork-local-db-file))
+    (sqlite-execute patchwork-db--connection "PRAGMA journal_mode=WAL")
+    (sqlite-execute patchwork-db--connection "PRAGMA busy_timeout=5000")
     (patchwork-db-init patchwork-db--connection))
   patchwork-db--connection)
 

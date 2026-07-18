@@ -1,4 +1,7 @@
 ;;; patchwel-git.el --- Apply Patchwork patches/series to a git tree -*- lexical-binding: t; -*-
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Code:
 
 (require 'patchwel-config)

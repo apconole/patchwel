@@ -1,4 +1,7 @@
 ;;; patchwel-config.el --- Configuration for patchwel -*- lexical-binding: t; -*-
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Code:
 
 (require 'url-parse)

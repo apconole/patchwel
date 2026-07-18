@@ -1,4 +1,7 @@
 ;;; patchwel-cache.el --- Sync Patchwork API data into the local cache -*- lexical-binding: t; -*-
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Code:
 
 (require 'time-date)
@@ -23,17 +26,41 @@ used to count its occurrences in comment text.")
         (> (- (float-time) (float-time cached-time)) patchwork-cache-ttl)
       t)))
 
-(defun patchwork-cache--iso (time)
-  "Format the Lisp TIME value as an ISO-8601 UTC timestamp.
-Uses an explicit +00:00 offset rather than a Z suffix, since not every
-Patchwork deployment's date parser accepts the latter (some `since='
-filters have 500'd on it)."
-  (format-time-string "%Y-%m-%d" time t))
+(defun patchwork-cache--iso-datetime (time)
+  "Format the Lisp TIME value as a full ISO-8601 UTC timestamp with a
+Z suffix (YYYY-MM-DDTHH:mm:ssZ).  Used both for local bookkeeping
+\(`sync_meta' storage, `patchwork-cache-is-stale') and as the `since='
+value sent to the server.  Confirmed against a real Patchwork server
+(patchwork.ozlabs.org) to filter `/series/' and `/events/' correctly
+in this exact form.  Earlier attempts used a \"+00:00\" offset instead
+of \"Z\"; that form arrived at the server mangled (almost certainly
+its \"+\" being decoded as a literal space, per the
+application/x-www-form-urlencoded convention) even though it looked
+correctly percent-encoded on this end -- \"Z\" has no such character
+to corrupt.  A bare date (no time-of-day) was also tried as a
+workaround and seemed safe, but turned out to be silently accepted
+and then ignored by the server (200 OK, always an empty result) --
+not an error, just quietly useless, which is worse."
+  (format-time-string "%Y-%m-%dT%H:%M:%SZ" time t))
+
+(defun patchwork-cache--parse-server-time (date-str)
+  "Parse DATE-STR, a raw Patchwork API date field, as a UTC Lisp time value.
+Patchwork's JSON date fields (e.g. \"2026-07-18T14:41:06.870773\")
+omit any timezone marker even though the value is actually UTC.
+Parsing that as-is via `date-to-time' would interpret it using the
+local system timezone instead, silently skewing every comparison
+against it by the local UTC offset -- e.g. an event from 8am UTC could
+look like it happened at noon or 4am depending where this Emacs
+happens to be running.  If DATE-STR already ends in an explicit
+offset or \"Z\", it is parsed as-is."
+  (if (string-match-p "\\(Z\\|[+-][0-9][0-9]:?[0-9][0-9]\\)\\'" date-str)
+      (date-to-time date-str)
+    (date-to-time (concat date-str "Z"))))
 
 (defun patchwork-cache--after-cutoff-p (date-str cutoff-time)
   "Return non-nil if DATE-STR is at or after CUTOFF-TIME.
 An unparseable DATE-STR is kept rather than silently dropped."
-  (let ((parsed (ignore-errors (date-to-time date-str))))
+  (let ((parsed (ignore-errors (patchwork-cache--parse-server-time date-str))))
     (or (null parsed) (not (time-less-p parsed cutoff-time)))))
 
 (defun patchwork-cache--get (obj &rest keys)
@@ -187,52 +214,105 @@ comment and check totals."
 (defun patchwork-cache--sync-window (server project cutoff-time)
   "Sync PROJECT on SERVER, limited to series at or after CUTOFF-TIME.
 Used for a server/project's first-ever sync, and as the fallback when
-SERVER has no events API to drive an incremental sync."
-  (let ((cutoff-str (patchwork-cache--iso cutoff-time)))
+SERVER has no events API to drive an incremental sync.  The client-side
+`patchwork-cache--after-cutoff-p' check is kept as a defensive
+double-check even though the server-side `since=' filter has been
+confirmed to work correctly on its own."
+  (let ((cutoff-str (patchwork-cache--iso-datetime cutoff-time)))
     (dolist (series-json (patchwork-api-list-series server project `(("since" . ,cutoff-str))))
       (when (patchwork-cache--after-cutoff-p (plist-get series-json :date) cutoff-time)
         (patchwork-cache--sync-one-series server series-json)))))
 
 (defun patchwork-cache--event-series-ids (server events)
   "Return the deduplicated series ids affected by EVENTS from SERVER.
-Events that reference a series directly contribute that id for free;
-events that only reference a patch require one extra lookup to learn
-which series that patch belongs to."
+An event's series/patch/cover reference lives under its :payload, not
+the event's top level (e.g. a patch-state-changed event looks like
+\(:category \"patch-state-changed\" :payload (:patch (:id ...)
+:previous_state ... :current_state ...))).  Confirmed against real
+Patchwork event payloads (patchwork.ozlabs.org, patches.dpdk.org):
+
+  series-created, series-completed  -> payload has :series directly
+  patch-completed                   -> payload has both :series and
+                                        :patch; :series is used
+  patch-created, patch-delegated,
+  patch-relation-changed,
+  check-created, patch-comment-created
+                                     -> payload has only :patch; its
+                                        series membership is looked up
+                                        via `patchwork-api-get-patch'
+  cover-comment-created, cover-created
+                                     -> payload has only :cover; its
+                                        series membership is looked up
+                                        via `patchwork-api-get-cover'.
+                                        cover-created's lookup is
+                                        usually redundant, since it
+                                        fires alongside a
+                                        series-created event for the
+                                        same series, but there's no
+                                        cheap way to distinguish the
+                                        two categories from shape
+                                        alone, and the extra lookup is
+                                        harmless."
   (let (ids)
     (dolist (event events)
-      (let ((series (plist-get event :series))
-            (patch (plist-get event :patch)))
+      (let* ((payload (plist-get event :payload))
+             (series (plist-get payload :series))
+             (patch (plist-get payload :patch))
+             (cover (plist-get payload :cover)))
         (cond
          (series (push (plist-get series :id) ids))
          (patch
           (let ((patch-json (ignore-errors
                               (patchwork-api-get-patch server (plist-get patch :id)))))
             (dolist (s (plist-get patch-json :series))
+              (push (plist-get s :id) ids))))
+         (cover
+          (let ((cover-json (ignore-errors
+                              (patchwork-api-get-cover server (plist-get cover :id)))))
+            (dolist (s (plist-get cover-json :series))
               (push (plist-get s :id) ids)))))))
     (delete-dups ids)))
 
 (defun patchwork-cache--sync-incremental (server project since cutoff-time)
-  "Sync PROJECT on SERVER using events since SINCE (an ISO-8601 string).
-Only series touched by those events are re-fetched.  Falls back to
-`patchwork-cache--sync-window' (bounded by CUTOFF-TIME) if SERVER has
-no events API."
-  (let ((events (condition-case nil
-                    (patchwork-api-list-events server project since)
-                  (error :unsupported))))
-    (if (eq events :unsupported)
-        (patchwork-cache--sync-window server project cutoff-time)
-      (dolist (series-id (patchwork-cache--event-series-ids server events))
-        (let ((series-json (ignore-errors (patchwork-api-get-series server series-id))))
-          (when series-json
-            (patchwork-cache--sync-one-series server series-json)))))))
+  "Sync PROJECT on SERVER using events since SINCE (a full-precision
+ISO-8601 string, as stored in `sync_meta', and sent to the server
+as-is -- `/events/' has been confirmed to honor `since=' correctly in
+this form).  A client-side `patchwork-cache--after-cutoff-p' re-check
+is kept as a cheap defensive double-check on top of the server-side
+filter.  Only series touched by the surviving events are re-fetched.
+Falls back to a full `patchwork-cache--sync-window' (bounded by
+CUTOFF-TIME) only when SERVER genuinely has no events API, signaled by
+the endpoint itself returning HTTP 404.  Any other failure (timeout,
+5xx, connection refused, ...) is a transient condition rather than
+proof the endpoint is missing, so it is re-signaled and left to the
+caller's per-server error handling instead of triggering a full resync
+that would just pile more requests onto an already-struggling network
+or server."
+  (condition-case err
+      (let* ((since-time (date-to-time since))
+             (events (seq-filter
+                      (lambda (event)
+                        (patchwork-cache--after-cutoff-p (plist-get event :date) since-time))
+                      (patchwork-api-list-events server project since))))
+        (dolist (series-id (patchwork-cache--event-series-ids server events))
+          (let ((series-json (ignore-errors (patchwork-api-get-series server series-id))))
+            (when series-json
+              (patchwork-cache--sync-one-series server series-json)))))
+    (patchwork-api-http-error
+     (if (eql (nth 1 err) 404)
+         (patchwork-cache--sync-window server project cutoff-time)
+       (signal (car err) (cdr err))))))
 
 (defun patchwork-cache--sync-server-project (server project force)
   "Sync PROJECT (or every project, if nil) on SERVER into the local cache.
 Skips the network round-trip when a sync happened within
 `patchwork-cache-ttl' seconds, unless FORCE is non-nil.  The very first
-sync for this SERVER/PROJECT pulls only `patchwork-sync-lookback-days'
-of history; later syncs fetch just what changed since the previous
-sync via the Patchwork events API."
+sync for this SERVER/PROJECT, and any FORCEd sync, pulls a full
+`patchwork-cache--sync-window' over `patchwork-sync-lookback-days' of
+history; other syncs fetch just what changed since the previous sync
+via the Patchwork events API.  FORCE therefore means a genuine full
+resync (e.g. to recover from a gap in event coverage), not merely
+\"ignore the TTL and do the usual incremental sync\"."
   (let* ((key (format "series-%s-%s" (plist-get server :url) (or project "all")))
          (last-sync (patchwork-db-get-sync-meta key)))
     (when (or force (patchwork-cache-is-stale key))
@@ -241,19 +321,22 @@ sync via the Patchwork events API."
                (if project (format " (%s)" project) ""))
       (let ((cutoff-time (time-subtract (current-time)
                                          (* patchwork-sync-lookback-days 86400))))
-        (if last-sync
+        (if (and last-sync (not force))
             (patchwork-cache--sync-incremental server project last-sync cutoff-time)
           (patchwork-cache--sync-window server project cutoff-time)))
-      (patchwork-db-set-sync-meta key (patchwork-cache--iso (current-time))))))
+      (patchwork-db-set-sync-meta key (patchwork-cache--iso-datetime (current-time))))))
 
 (defun patchwork-cache-sync (&optional force)
   "Sync every configured `patchwork-servers' entry (and its projects).
-With FORCE non-nil, sync even if the cache is still fresh.  A server or
-project that errors out (network failure, HTTP error, etc.) is skipped
-with a warning rather than aborting the rest of the sync, so one bad
-server never prevents the others' cached data from showing.  Returns
-all cached series afterwards, including any left over from previous
-successful syncs of a server that just failed."
+With FORCE non-nil, sync even if the cache is still fresh, and do a
+full resync of `patchwork-sync-lookback-days' rather than the usual
+incremental events-based sync -- useful for recovering from any gap in
+event coverage rather than waiting for the next periodic full sync.
+A server or project that errors out (network failure, HTTP error,
+etc.) is skipped with a warning rather than aborting the rest of the
+sync, so one bad server never prevents the others' cached data from
+showing.  Returns all cached series afterwards, including any left
+over from previous successful syncs of a server that just failed."
   (dolist (server patchwork-servers)
     (dolist (project (patchwork-server-projects server))
       (condition-case err

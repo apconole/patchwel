@@ -1,7 +1,9 @@
 ;;; patchwel-ui.el --- Buffers for browsing Patchwork series -*- lexical-binding: t; -*-
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
 ;;; Code:
 
-(require 'tabulated-list)
 (require 'patchwel-config)
 (require 'patchwel-db)
 (require 'patchwel-cache)
@@ -49,59 +51,149 @@ change at runtime with `patchwork-series-set-filter' or
       (push (format "author:%s" (plist-get filter :author)) parts))
     (if parts (string-join (nreverse parts) " ") "all")))
 
-(defun patchwork-series--entry (series)
-  "Build a `tabulated-list-entries' element for SERIES.
-The entry id is a (SERVER-URL . SERIES-ID) cons, since series ids are
-only unique within a single server."
-  (let ((server-url (plist-get series :server-url))
-        (id (plist-get series :id)))
-    (list (cons server-url id)
-          (vector
-           (patchwork-server-slug (list :url server-url))
-           (or (plist-get series :project-slug) "")
-           (number-to-string id)
-           (or (plist-get series :name) "")
-           (or (plist-get series :submitter) "")
-           (patchwork-series--format-date (plist-get series :submitted-at))
-           (number-to-string (or (plist-get series :comment-count) 0))
-           (number-to-string (or (plist-get series :ack-count) 0))
-           (number-to-string (or (plist-get series :review-count) 0))
-           (number-to-string (or (plist-get series :test-count) 0))
-           (number-to-string (or (plist-get series :fixes-count) 0))
-           (number-to-string (or (plist-get series :check-success) 0))
-           (number-to-string (or (plist-get series :check-warning) 0))
-           (number-to-string (or (plist-get series :check-fail) 0))
-           (or (plist-get series :assignee) "")
-           (or (plist-get series :state) "")))))
+(defconst patchwork-series--row-format
+  "  %-6s %-34.34s %-14.14s %-10s %5s %4s %4s %5s %4s %5s %5s %5s %-12.12s %-16s"
+  "Format string for one series row and for the column header row.
+Columns: id, title, author, submitted, comments, ack, review, test,
+fixes, check-success, check-warning, check-fail, assignee, state.
+Server and project aren't columns here since each group's header line
+already names them once for every series underneath it.")
 
-(defun patchwork-series--populate ()
-  "Refresh `tabulated-list-entries' from the local cache, applying the
-buffer's current filter, and update the mode line to show it."
-  (setq tabulated-list-entries
-        (mapcar #'patchwork-series--entry
-                (seq-filter (lambda (s) (patchwork-series--matches-filter-p s patchwork-series--filter))
-                            (patchwork-db-query-series))))
-  (setq mode-line-process (format " [%s]" (patchwork-series--filter-description patchwork-series--filter))))
+(defun patchwork-series--header-row-string ()
+  "Return the column header line matching `patchwork-series--row-format'."
+  (format patchwork-series--row-format
+          "ID" "Title" "Author" "Submitted" "Cmts" "Ack" "Rev" "Test" "Fix"
+          "Succ" "Warn" "Fail" "Assignee" "State"))
+
+(defun patchwork-series--row-string (series)
+  "Format SERIES as one aligned display row."
+  (format patchwork-series--row-format
+          (plist-get series :id)
+          (or (plist-get series :name) "")
+          (or (plist-get series :submitter) "")
+          (patchwork-series--format-date (plist-get series :submitted-at))
+          (or (plist-get series :comment-count) 0)
+          (or (plist-get series :ack-count) 0)
+          (or (plist-get series :review-count) 0)
+          (or (plist-get series :test-count) 0)
+          (or (plist-get series :fixes-count) 0)
+          (or (plist-get series :check-success) 0)
+          (or (plist-get series :check-warning) 0)
+          (or (plist-get series :check-fail) 0)
+          (or (plist-get series :assignee) "")
+          (or (plist-get series :state) "")))
+
+(defvar-local patchwork-series--collapsed nil
+  "Hash table of (SERVER-URL . PROJECT-SLUG) group key -> non-nil if
+that group is currently collapsed.  Persists across `g' refreshes of
+the same buffer so a user's collapse/expand choices aren't lost.")
+
+(defun patchwork-series--grouped ()
+  "Return cached series matching the buffer's filter, grouped and sorted.
+Result is an alist of ((SERVER-URL . PROJECT-SLUG) . SERIES-LIST),
+groups ordered by server then project, each SERIES-LIST ordered newest
+submitted first."
+  (let ((matching (seq-filter (lambda (s) (patchwork-series--matches-filter-p s patchwork-series--filter))
+                               (patchwork-db-query-series)))
+        (groups (make-hash-table :test #'equal))
+        (order nil))
+    (dolist (s matching)
+      (let ((key (cons (plist-get s :server-url) (plist-get s :project-slug))))
+        (unless (gethash key groups) (push key order))
+        (puthash key (cons s (gethash key groups)) groups)))
+    (mapcar (lambda (key)
+              (cons key
+                    (sort (gethash key groups)
+                          (lambda (a b) (string> (or (plist-get a :submitted-at) "")
+                                                  (or (plist-get b :submitted-at) ""))))))
+            (sort order
+                  (lambda (a b)
+                    (let ((sa (patchwork-server-slug (list :url (car a))))
+                          (sb (patchwork-server-slug (list :url (car b)))))
+                      (if (string= sa sb)
+                          (string< (or (cdr a) "") (or (cdr b) ""))
+                        (string< sa sb))))))))
+
+(defun patchwork-series--render ()
+  "Redraw the series listing buffer: grouped by server/project, with
+collapsible `[+]'/`[-]' group headers, preserving the current line."
+  (unless (hash-table-p patchwork-series--collapsed)
+    (setq patchwork-series--collapsed (make-hash-table :test #'equal)))
+  (let ((inhibit-read-only t)
+        (line (line-number-at-pos)))
+    (erase-buffer)
+    (insert (patchwork-series--header-row-string) "\n")
+    (insert (make-string (length (patchwork-series--header-row-string)) ?-) "\n")
+    (dolist (group (patchwork-series--grouped))
+      (let* ((key (car group))
+             (series-list (cdr group))
+             (collapsed (gethash key patchwork-series--collapsed))
+             (label (format "[%s] %s | %s  (%d)"
+                            (if collapsed "+" "-")
+                            (patchwork-server-slug (list :url (car key)))
+                            (or (cdr key) "(no project)")
+                            (length series-list))))
+        (insert (propertize label 'patchwork-group key 'face 'bold) "\n")
+        (unless collapsed
+          (dolist (s series-list)
+            (insert (propertize (patchwork-series--row-string s)
+                                 'patchwork-series-entry
+                                 (cons (plist-get s :server-url) (plist-get s :id)))
+                    "\n")))))
+    (goto-char (point-min))
+    (forward-line (1- line))
+    (setq mode-line-process (format " [%s]" (patchwork-series--filter-description patchwork-series--filter)))))
 
 (defun patchwork-series-at-point ()
-  "Return the (SERVER-URL . SERIES-ID) entry id at point, or nil."
-  (tabulated-list-get-id))
+  "Return the (SERVER-URL . SERIES-ID) of the series row at point, or nil."
+  (get-text-property (line-beginning-position) 'patchwork-series-entry))
+
+(defun patchwork-series-group-at-point ()
+  "Return the (SERVER-URL . PROJECT-SLUG) of the group header at point, or nil."
+  (get-text-property (line-beginning-position) 'patchwork-group))
 
 (defun patchwork-series-refresh (&optional force)
   "Re-sync from every configured Patchwork server and redraw the listing.
-With a prefix argument, FORCE a sync even if the cache is fresh."
+With a prefix argument, do a full resync (`patchwork-sync-lookback-days'
+worth) rather than the usual incremental events-based sync, even if
+the cache is still fresh -- use this to recover from any gap in event
+coverage instead of waiting for the next periodic full sync."
   (interactive "P")
   (patchwork-cache-sync force)
-  (patchwork-series--populate)
-  (tabulated-list-print t))
+  (patchwork-series--render))
 
-(defun patchwork-series-view-at-point ()
-  "Open the detail buffer for the series at point."
+(defun patchwork-series-toggle-group (key)
+  "Toggle the collapsed/expanded state of the group KEY and redraw."
+  (unless patchwork-series--collapsed
+    (setq patchwork-series--collapsed (make-hash-table :test #'equal)))
+  (if (gethash key patchwork-series--collapsed)
+      (remhash key patchwork-series--collapsed)
+    (puthash key t patchwork-series--collapsed))
+  (patchwork-series--render))
+
+(defun patchwork-series-dwim ()
+  "View the series at point, or toggle the group header at point."
   (interactive)
-  (let ((entry (patchwork-series-at-point)))
-    (if entry
-        (patchwork-view-series-details (car entry) (cdr entry))
-      (message "No series on this line"))))
+  (let ((entry (patchwork-series-at-point))
+        (group (patchwork-series-group-at-point)))
+    (cond
+     (entry (patchwork-view-series-details (car entry) (cdr entry)))
+     (group (patchwork-series-toggle-group group))
+     (t (message "Nothing on this line")))))
+
+(defun patchwork-series-expand-all ()
+  "Expand every group in the series listing buffer."
+  (interactive)
+  (setq patchwork-series--collapsed (make-hash-table :test #'equal))
+  (patchwork-series--render))
+
+(defun patchwork-series-collapse-all ()
+  "Collapse every group in the series listing buffer."
+  (interactive)
+  (setq patchwork-series--collapsed (make-hash-table :test #'equal))
+  (dolist (group (patchwork-series--grouped))
+    (puthash (car group) t patchwork-series--collapsed))
+  (patchwork-series--render))
 
 (defun patchwork-series-apply-at-point ()
   "Apply every patch in the series at point to a chosen git repository."
@@ -136,62 +228,45 @@ remove that dimension (show every value for it)."
                 :server (unless (string-empty-p server) server)
                 :project (unless (string-empty-p project) project)
                 :author (unless (string-empty-p author) author)))
-    (patchwork-series--populate)
-    (tabulated-list-print t)
+    (patchwork-series--render)
     (message "Filter: %s" (patchwork-series--filter-description patchwork-series--filter))))
 
 (defun patchwork-series-reset-filter ()
   "Reset this buffer's filter back to `patchwork-default-state-filter'."
   (interactive)
   (setq patchwork-series--filter (list :states patchwork-default-state-filter))
-  (patchwork-series--populate)
-  (tabulated-list-print t)
+  (patchwork-series--render)
   (message "Filter reset to default: %s"
            (patchwork-series--filter-description patchwork-series--filter)))
 
 (defvar patchwork-series-mode-map
   (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map tabulated-list-mode-map)
-    (define-key map (kbd "RET") #'patchwork-series-view-at-point)
+    (define-key map (kbd "RET") #'patchwork-series-dwim)
+    (define-key map (kbd "TAB") #'patchwork-series-dwim)
     (define-key map "g" #'patchwork-series-refresh)
     (define-key map "a" #'patchwork-series-apply-at-point)
     (define-key map "f" #'patchwork-series-set-filter)
     (define-key map "F" #'patchwork-series-reset-filter)
+    (define-key map "+" #'patchwork-series-expand-all)
+    (define-key map "-" #'patchwork-series-collapse-all)
     (define-key map "q" #'quit-window)
     map)
   "Keymap for `patchwork-series-mode'.")
 
-(define-derived-mode patchwork-series-mode tabulated-list-mode "Patchwork-Series"
-  "Major mode listing cached Patchwork series and their review status."
-  (setq tabulated-list-format
-        [("Server" 12 t)
-         ("Project" 10 t)
-         ("ID" 6 t)
-         ("Title" 36 t)
-         ("Author" 14 t)
-         ("Submitted" 12 t)
-         ("Cmts" 5 t)
-         ("Ack" 4 t)
-         ("Rev" 4 t)
-         ("Test" 5 t)
-         ("Fix" 4 t)
-         ("Succ" 5 t)
-         ("Warn" 5 t)
-         ("Fail" 5 t)
-         ("Assignee" 12 t)
-         ("State" 18 t)])
-  (setq tabulated-list-padding 1)
-  (setq tabulated-list-sort-key (cons "Submitted" t))
-  (tabulated-list-init-header))
+(define-derived-mode patchwork-series-mode special-mode "Patchwork-Series"
+  "Major mode listing cached Patchwork series, grouped by server and
+project under collapsible `[+]'/`[-]' headers.  Press RET or TAB on a
+group header to toggle it, or on a series row to view its details.")
 
 ;;;###autoload
 (defun patchwork-show-series ()
   "Display cached Patchwork series, from every configured server, in the
-main listing buffer.  Syncs from the Patchwork API first (subject to
-`patchwork-cache-ttl').  Shows only `patchwork-default-state-filter'
-states the first time this buffer is created; re-invoking this command
-on an already-open buffer just refreshes its data and keeps whatever
-filter is currently active (see `patchwork-series-set-filter')."
+main listing buffer, grouped by server and project.  Syncs from the
+Patchwork API first (subject to `patchwork-cache-ttl').  Shows only
+`patchwork-default-state-filter' states the first time this buffer is
+created; re-invoking this command on an already-open buffer just
+refreshes its data and keeps whatever filter and group collapse state
+are currently active (see `patchwork-series-set-filter')."
   (interactive)
   (let ((buffer (get-buffer-create patchwork-series-buffer-name)))
     (patchwork-cache-sync)
@@ -199,8 +274,7 @@ filter is currently active (see `patchwork-series-set-filter')."
       (unless (derived-mode-p 'patchwork-series-mode)
         (patchwork-series-mode)
         (setq patchwork-series--filter (list :states patchwork-default-state-filter)))
-      (patchwork-series--populate)
-      (tabulated-list-print t))
+      (patchwork-series--render))
     (switch-to-buffer buffer)))
 
 (defvar-local patchwork-series-detail--server-url nil
