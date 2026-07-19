@@ -29,7 +29,14 @@
              "&"))))
 
 (defun patchwork-api--headers (server)
-  "Return the HTTP headers used for every request to SERVER."
+  "Return the HTTP headers used for every request to SERVER.
+Deliberately does not include User-Agent: passing one via headers
+here doesn't replace url.el's own auto-generated one, it gets appended
+after it (\"URL/Emacs Emacs/30.2 (...),curl/8.7.1\", observed against a
+header-echoing test service) -- worse than not trying at all.  The
+`url-user-agent' dynamic variable is the mechanism that actually
+replaces it; see callers of this function, which bind it around the
+request."
   (append '(("Accept" . "application/json")
             ("Content-Type" . "application/json"))
           (when (plist-get server :token)
@@ -48,10 +55,80 @@
             (when (and link (string-match "<\\([^>]+\\)>; *rel=\"next\"" link))
               (match-string 1 link))))))))
 
+(defvar patchwork-api-challenge-hook nil
+  "Hook run when a Patchwork server's response looks like an anti-bot
+challenge page (e.g. Anubis's JavaScript proof-of-work gate) rather
+than the expected JSON.  Emacs cannot solve such a challenge on its
+own; this exists purely as an extension point so a dedicated module
+could plug in later.
+
+Each function is called with (SERVER URL BUFFER), where BUFFER holds
+the complete raw HTTP response (headers and body) that looked like a
+challenge, and SERVER/URL identify what was being requested.  Called
+via `run-hook-with-args-until-success': the first function to return a
+buffer wins -- that buffer must hold a substitute HTTP response (same
+raw \"status line, headers, blank line, body\" shape as BUFFER) to use
+instead, e.g. after solving the challenge and re-issuing the request
+some other way.  A function that can't handle this particular response
+should return nil.  If no function handles it (including when this
+hook is empty, its default), the original \"non-JSON content\" error is
+signaled as before.")
+
+(defun patchwork-api--looks-like-challenge-p (start)
+  "Return non-nil if the current buffer doesn't look like JSON starting
+at START -- i.e. this might be a non-API challenge page (e.g. Anubis)
+rather than the expected response."
+  (save-excursion
+    (goto-char start)
+    (skip-chars-forward " \t\r\n")
+    (not (memq (char-after) '(?\[ ?\{)))))
+
+(defun patchwork-api--signal-non-json-error (start)
+  "Signal a clear error for the non-JSON content at START, rather than
+letting `json-parse-buffer' fail with a cryptic byte-position error."
+  (save-excursion
+    (goto-char start)
+    (skip-chars-forward " \t\r\n")
+    (let ((snippet (buffer-substring-no-properties
+                    (point) (min (point-max) (+ (point) 200)))))
+      (error "Patchwork API returned non-JSON content%s: %s"
+             (if (string-match-p "<!doctype html\\|<html" snippet)
+                 " (looks like an HTML page -- possibly an anti-bot challenge such as Anubis, which Emacs cannot solve)"
+               "")
+             snippet))))
+
+(defun patchwork-api--process-response (server url buffer)
+  "Process BUFFER, a completed `url-retrieve' response for URL on
+SERVER, into (BODY . NEXT-LINK), or signal an error.  If BUFFER looks
+like a non-JSON challenge page, gives `patchwork-api-challenge-hook' a
+chance to supply a substitute response to process instead before
+giving up."
+  (with-current-buffer buffer
+    (goto-char (point-min))
+    (unless (looking-at "HTTP/[0-9.]+ 2[0-9][0-9]")
+      (let* ((status-line (buffer-substring-no-properties (point) (line-end-position)))
+             (status (and (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" status-line)
+                          (string-to-number (match-string 1 status-line)))))
+        (signal 'patchwork-api-http-error (list status url status-line))))
+    (let ((next (patchwork-api--next-link buffer)))
+      (search-forward "\n\n")
+      (if (patchwork-api--looks-like-challenge-p (point))
+          (let ((solved (run-hook-with-args-until-success
+                         'patchwork-api-challenge-hook server url buffer)))
+            (if solved
+                (unwind-protect
+                    (patchwork-api--process-response server url solved)
+                  (unless (eq solved buffer) (kill-buffer solved)))
+              (patchwork-api--signal-non-json-error (point))))
+        (cons (json-parse-buffer :object-type 'plist :array-type 'list
+                                  :null-object nil :false-object nil)
+              next)))))
+
 (defun patchwork-api--request-once (server url method params)
   "Perform a single HTTP request to URL on SERVER and return (BODY . NEXT-LINK)."
   (let* ((url-request-method (upcase (symbol-name method)))
          (url-request-extra-headers (patchwork-api--headers server))
+         (url-user-agent (patchwork-server-user-agent server))
          (url-request-data
           (when (and params (not (memq method '(get))))
             (encode-coding-string (json-encode params) 'utf-8)))
@@ -59,18 +136,7 @@
     (unless buffer
       (signal 'patchwork-api-timeout-error (list url patchwork-sync-timeout)))
     (unwind-protect
-        (with-current-buffer buffer
-          (goto-char (point-min))
-          (unless (looking-at "HTTP/[0-9.]+ 2[0-9][0-9]")
-            (let* ((status-line (buffer-substring-no-properties (point) (line-end-position)))
-                   (status (and (string-match "HTTP/[0-9.]+ \\([0-9]+\\)" status-line)
-                                (string-to-number (match-string 1 status-line)))))
-              (signal 'patchwork-api-http-error (list status url status-line))))
-          (let ((next (patchwork-api--next-link buffer)))
-            (search-forward "\n\n")
-            (cons (json-parse-buffer :object-type 'plist :array-type 'list
-                                      :null-object nil :false-object nil)
-                  next)))
+        (patchwork-api--process-response server url buffer)
       (kill-buffer buffer))))
 
 (defun patchwork-api-request (server path &optional method params)
@@ -98,6 +164,7 @@ paginated list, all pages are fetched and concatenated."
 (defun patchwork-api-fetch-raw (server url)
   "Fetch URL on SERVER and return its response body as a plain string (not JSON)."
   (let* ((url-request-extra-headers (patchwork-api--headers server))
+         (url-user-agent (patchwork-server-user-agent server))
          (buffer (url-retrieve-synchronously url t t patchwork-sync-timeout)))
     (unless buffer
       (signal 'patchwork-api-timeout-error (list url patchwork-sync-timeout)))

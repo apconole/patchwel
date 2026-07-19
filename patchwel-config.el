@@ -29,7 +29,11 @@ Each entry is a plist with:
                  `patchwork-since-format-strings'); if you already know
                  which one a given server wants, set this to avoid paying
                  for a failed attempt with the wrong format on every
-                 first-ever/forced sync.  Leave nil to keep auto-detecting."
+                 first-ever/forced sync.  Leave nil to keep auto-detecting.
+  :user-agent    Optional User-Agent string to send to this server instead
+                 of `patchwork-user-agent'.  Useful if a server admin has
+                 exempted a specific string from anti-bot protection for
+                 you.  Leave nil to use the default."
   :type '(repeat
           (list :tag "Server"
                 (const :format "" :url)
@@ -43,7 +47,23 @@ Each entry is a plist with:
                         (const :tag "Auto (try common formats)" nil)
                         (const :tag "UTC datetime with Z suffix" z)
                         (const :tag "Naive datetime, no timezone" naive)
-                        (const :tag "Date only" date))))
+                        (const :tag "Date only" date))
+                (const :format "" :user-agent)
+                (choice :tag "User-Agent" (const :tag "Default" nil) string)))
+  :group 'patchwork)
+
+(defcustom patchwork-user-agent "curl/8.7.1"
+  "Default User-Agent string sent with every Patchwork API request.
+Emacs's own default (something like \"URL/Emacs Emacs/30.2...\") reads
+as automated-client traffic, and at least one deployment fronted by an
+anti-bot system (e.g. Anubis) has been observed serving a JavaScript
+challenge page instead of a real API response for it.  Identifying as
+a plain curl client is a more neutral choice that doesn't misrepresent
+this as an interactive browser -- deliberately never set this to an
+actual browser's User-Agent string.  Override per server with
+:user-agent in `patchwork-servers', e.g. if a
+server admin has exempted a specific string for you."
+  :type 'string
   :group 'patchwork)
 
 (defconst patchwork-since-format-strings
@@ -152,6 +172,11 @@ Patchwork instances proxied off different ports on one machine)."
   "Return the list of project filters to sync for SERVER.
 A single nil entry means \"sync every project\"."
   (or (plist-get server :projects) (list nil)))
+
+(defun patchwork-server-user-agent (server)
+  "Return the User-Agent string to send to SERVER: its own :user-agent
+override if set, otherwise `patchwork-user-agent'."
+  (or (plist-get server :user-agent) patchwork-user-agent))
 
 (provide 'patchwel-config)
 
