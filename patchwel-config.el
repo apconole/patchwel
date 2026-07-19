@@ -16,10 +16,20 @@
   "List of Patchwork servers to sync and browse.
 Each entry is a plist with:
 
-  :url      Base API URL for the server, no trailing slash.
-  :token    API token for this server, or nil for anonymous/read-only access.
-  :projects List of project slugs or ids to sync on this server, or nil to
-            sync every project visible to this server/token."
+  :url           Base API URL for the server, no trailing slash.
+  :token         API token for this server, or nil for anonymous/read-only
+                 access.
+  :projects      List of project slugs or ids to sync on this server, or
+                 nil to sync every project visible to this server/token.
+  :since-format  Optional; a key into `patchwork-since-format-strings'
+                 (one of z, naive, date) forcing which `since=' timestamp
+                 format to send to this server, skipping the normal
+                 try-each-format cascade.  Different Patchwork deployments
+                 parse `since=' differently (see
+                 `patchwork-since-format-strings'); if you already know
+                 which one a given server wants, set this to avoid paying
+                 for a failed attempt with the wrong format on every
+                 first-ever/forced sync.  Leave nil to keep auto-detecting."
   :type '(repeat
           (list :tag "Server"
                 (const :format "" :url)
@@ -27,8 +37,39 @@ Each entry is a plist with:
                 (const :format "" :token)
                 (choice :tag "Token" (const :tag "None" nil) string)
                 (const :format "" :projects)
-                (repeat :tag "Projects" string)))
+                (repeat :tag "Projects" string)
+                (const :format "" :since-format)
+                (choice :tag "Since format"
+                        (const :tag "Auto (try common formats)" nil)
+                        (const :tag "UTC datetime with Z suffix" z)
+                        (const :tag "Naive datetime, no timezone" naive)
+                        (const :tag "Date only" date))))
   :group 'patchwork)
+
+(defconst patchwork-since-format-strings
+  '((z . "%Y-%m-%dT%H:%M:%SZ")
+    (naive . "%Y-%m-%dT%H:%M:%S")
+    (date . "%Y-%m-%d"))
+  "Known `since=' timestamp formats, keyed by a short symbol, in the
+order tried when a server's format isn't already known (see
+:since-format in `patchwork-servers').  There is no one format
+confirmed to work across every Patchwork deployment:
+patchwork.ozlabs.org and patches.dpdk.org both want a Z-suffixed UTC
+datetime (z); patchwork.kernel.org 500s on any timezone marker at all
+and only accepts a naive datetime with none (naive); a bare date
+(date) is the coarsest fallback.")
+
+(defun patchwork-since-format-string (time &optional format)
+  "Format the Lisp TIME value as a `since=' string using FORMAT, a key
+in `patchwork-since-format-strings', defaulting to its Z-suffixed
+entry when FORMAT is nil."
+  (format-time-string (alist-get (or format 'z) patchwork-since-format-strings)
+                       time t))
+
+(defun patchwork-server-since-format (server)
+  "Return SERVER's configured :since-format symbol, or nil to use the
+default try-each-format cascade."
+  (plist-get server :since-format))
 
 (defcustom patchwork-local-db-file
   (expand-file-name "~/.cache/patchwel/patchwork.db")

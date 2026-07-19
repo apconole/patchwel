@@ -43,6 +43,31 @@ and then ignored by the server (200 OK, always an empty result) --
 not an error, just quietly useless, which is worse."
   (format-time-string "%Y-%m-%dT%H:%M:%SZ" time t))
 
+(defun patchwork-cache--fetch-with-since (server cutoff-time fetch-fn)
+  "Call FETCH-FN, a function of one string argument (a `since=' value)
+derived from CUTOFF-TIME.  If SERVER has an explicit :since-format
+configured (see `patchwork-servers'), use exactly that format and let
+any error propagate normally -- the point of setting it is to skip
+paying for a known-wrong attempt.  Otherwise try each format in
+`patchwork-since-format-strings' order, moving to the next whenever a
+format is rejected with an HTTP error; if every format fails,
+re-signals the last error rather than silently returning nothing."
+  (let ((explicit (patchwork-server-since-format server)))
+    (if explicit
+        (funcall fetch-fn (patchwork-since-format-string cutoff-time explicit))
+      (let ((formats (mapcar #'car patchwork-since-format-strings))
+            result done)
+        (while (and formats (not done))
+          (condition-case err
+              (progn
+                (setq result (funcall fetch-fn
+                                       (patchwork-since-format-string cutoff-time (car formats))))
+                (setq done t))
+            (patchwork-api-http-error
+             (setq formats (cdr formats))
+             (unless formats (signal (car err) (cdr err))))))
+        result))))
+
 (defun patchwork-cache--parse-server-time (date-str)
   "Parse DATE-STR, a raw Patchwork API date field, as a UTC Lisp time value.
 Patchwork's JSON date fields (e.g. \"2026-07-18T14:41:06.870773\")
@@ -251,11 +276,16 @@ Used for a server/project's first-ever sync, and as the fallback when
 SERVER has no events API to drive an incremental sync.  The client-side
 `patchwork-cache--after-cutoff-p' check is kept as a defensive
 double-check even though the server-side `since=' filter has been
-confirmed to work correctly on its own."
-  (let ((cutoff-str (patchwork-cache--iso-datetime cutoff-time)))
-    (dolist (series-json (patchwork-api-list-series server project `(("since" . ,cutoff-str))))
-      (when (patchwork-cache--after-cutoff-p (plist-get series-json :date) cutoff-time)
-        (patchwork-cache--sync-one-series server series-json)))))
+confirmed to work correctly on its own -- on most deployments; see
+`patchwork-cache--fetch-with-since' for why a single format can't be
+assumed to work everywhere."
+  (dolist (series-json
+           (patchwork-cache--fetch-with-since
+            server cutoff-time
+            (lambda (since-str)
+              (patchwork-api-list-series server project `(("since" . ,since-str))))))
+    (when (patchwork-cache--after-cutoff-p (plist-get series-json :date) cutoff-time)
+      (patchwork-cache--sync-one-series server series-json))))
 
 (defun patchwork-cache--event-series-ids (server events)
   "Return the deduplicated series ids affected by EVENTS from SERVER.
@@ -309,11 +339,13 @@ Patchwork event payloads (patchwork.ozlabs.org, patches.dpdk.org):
 
 (defun patchwork-cache--sync-incremental (server project since cutoff-time)
   "Sync PROJECT on SERVER using events since SINCE (a full-precision
-ISO-8601 string, as stored in `sync_meta', and sent to the server
-as-is -- `/events/' has been confirmed to honor `since=' correctly in
-this form).  A client-side `patchwork-cache--after-cutoff-p' re-check
-is kept as a cheap defensive double-check on top of the server-side
-filter.  Only series touched by the surviving events are re-fetched.
+ISO-8601 string, as stored in `sync_meta').  The actual `since=' value
+sent may be a coarser format than SINCE if the server rejects finer
+ones with an HTTP error -- see `patchwork-cache--fetch-with-since'.  A
+client-side `patchwork-cache--after-cutoff-p' re-check against SINCE's
+real precision is kept regardless, so a coarser request doesn't cause
+already-processed events to be reprocessed.  Only series touched by
+the surviving events are re-fetched.
 Falls back to a full `patchwork-cache--sync-window' (bounded by
 CUTOFF-TIME) only when SERVER genuinely has no events API, signaled by
 the endpoint itself returning HTTP 404.  Any other failure (timeout,
@@ -327,7 +359,10 @@ or server."
              (events (seq-filter
                       (lambda (event)
                         (patchwork-cache--after-cutoff-p (plist-get event :date) since-time))
-                      (patchwork-api-list-events server project since))))
+                      (patchwork-cache--fetch-with-since
+                       server since-time
+                       (lambda (since-str)
+                         (patchwork-api-list-events server project since-str))))))
         (dolist (series-id (patchwork-cache--event-series-ids server events))
           (let ((series-json (ignore-errors (patchwork-api-get-series server series-id))))
             (when series-json
