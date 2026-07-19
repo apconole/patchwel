@@ -262,17 +262,25 @@ project under collapsible `[+]'/`[-]' headers.  Press RET or TAB on a
 group header to toggle it, or on a series row to view its details.")
 
 ;;;###autoload
-(defun patchwork-show-series ()
+(defun patchwork-show-series (&optional skip-sync)
   "Display cached Patchwork series, from every configured server, in the
 main listing buffer, grouped by server and project.  Syncs from the
 Patchwork API first (subject to `patchwork-cache-ttl').  Shows only
 `patchwork-default-state-filter' states the first time this buffer is
 created; re-invoking this command on an already-open buffer just
 refreshes its data and keeps whatever filter and group collapse state
-are currently active (see `patchwork-series-set-filter')."
-  (interactive)
+are currently active (see `patchwork-series-set-filter').
+
+With a prefix argument, skip the sync entirely and show whatever is
+already cached, right now -- useful if a background process (e.g. a
+crontab running patchwork-cron-sync.el) is already keeping the cache
+warm, syncing is otherwise just taking too long to wait on right now,
+or you simply want to control when this goes over the network
+yourself.  Sync later, from within the buffer, with `g'/`C-u g'."
+  (interactive "P")
   (let ((buffer (get-buffer-create patchwork-series-buffer-name)))
-    (patchwork-cache-sync)
+    (unless skip-sync
+      (patchwork-cache-sync))
     (with-current-buffer buffer
       (unless (derived-mode-p 'patchwork-series-mode)
         (patchwork-series-mode)
