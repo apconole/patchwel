@@ -4,6 +4,7 @@
 
 ;;; Code:
 
+(require 'diff-mode)
 (require 'patchwel-config)
 (require 'patchwel-db)
 (require 'patchwel-cache)
@@ -308,6 +309,11 @@ routine sync to ever reach on its own."
 show its full text, in the current detail buffer.  Persists across
 `g' refreshes of the same buffer.")
 
+(defvar-local patchwork-series-detail--expanded-patches nil
+  "Hash table of patch id -> non-nil if that patch is expanded to show
+its commit message and diff, in the current detail buffer.  Persists
+across `g' refreshes of the same buffer.")
+
 (defun patchwork-series-detail--comment-at-point ()
   "Return the comment id at point in a detail buffer, or nil."
   (get-text-property (line-beginning-position) 'patchwork-comment-id))
@@ -315,6 +321,31 @@ show its full text, in the current detail buffer.  Persists across
 (defun patchwork-series-detail--patch-at-point ()
   "Return the patch id at point in a detail buffer, or nil."
   (get-text-property (line-beginning-position) 'patchwork-patch-id))
+
+(defun patchwork-series-detail--toggle-hash (hash-var key)
+  "Toggle KEY's presence in the hash table held by buffer-local
+variable HASH-VAR (a symbol), lazily creating it if needed, then
+redraw this detail buffer."
+  (unless (hash-table-p (symbol-value hash-var))
+    (set hash-var (make-hash-table :test #'eql)))
+  (let ((table (symbol-value hash-var)))
+    (if (gethash key table)
+        (remhash key table)
+      (puthash key t table)))
+  (patchwork-view-series-details patchwork-series-detail--server-url
+                                  patchwork-series-detail--id))
+
+(defun patchwork-series-detail--propertize-diff-line (line)
+  "Return LINE propertized with the diff-mode face matching its role,
+if any (file/hunk headers, added/removed lines)."
+  (cond
+   ((string-prefix-p "diff --git" line) (propertize line 'face 'diff-header))
+   ((or (string-prefix-p "+++" line) (string-prefix-p "---" line))
+    (propertize line 'face 'diff-file-header))
+   ((string-prefix-p "@@" line) (propertize line 'face 'diff-hunk-header))
+   ((string-prefix-p "+" line) (propertize line 'face 'diff-added))
+   ((string-prefix-p "-" line) (propertize line 'face 'diff-removed))
+   (t line)))
 
 (defun patchwork-view-series-details (server-url series-id)
   "Show a detail buffer for SERIES-ID on SERVER-URL.
@@ -332,6 +363,8 @@ a comment line toggles it open to show the full text."
     (with-current-buffer buffer
       (unless (hash-table-p patchwork-series-detail--expanded-comments)
         (setq patchwork-series-detail--expanded-comments (make-hash-table :test #'eql)))
+      (unless (hash-table-p patchwork-series-detail--expanded-patches)
+        (setq patchwork-series-detail--expanded-patches (make-hash-table :test #'eql)))
       (let ((inhibit-read-only t)
             (line (line-number-at-pos)))
         (erase-buffer)
@@ -358,13 +391,30 @@ a comment line toggles it open to show the full text."
                         (or (plist-get series :check-fail) 0)))
         (insert "\n--- Patches ---\n")
         (dolist (patch patches)
-          (insert (propertize
-                   (format "%3d. #%-8d [%-16s] %s\n"
-                           (or (plist-get patch :series-position) 0)
-                           (plist-get patch :id)
-                           (or (plist-get patch :state) "")
-                           (or (plist-get patch :name) ""))
-                   'patchwork-patch-id (plist-get patch :id)))
+          (let* ((patch-id (plist-get patch :id))
+                 (expanded (gethash patch-id patchwork-series-detail--expanded-patches)))
+            (insert (propertize
+                     (format "%s %3d. #%-8d [%-16s] %s\n"
+                             (if expanded "[-]" "[+]")
+                             (or (plist-get patch :series-position) 0)
+                             patch-id
+                             (or (plist-get patch :state) "")
+                             (or (plist-get patch :name) ""))
+                     'patchwork-patch-id patch-id))
+            (when expanded
+              (let ((content (plist-get patch :content))
+                    (diff (plist-get patch :diff)))
+                (if (not (or content diff))
+                    (insert "     (full patch content not cached yet; C-u g fetches it from the server)\n")
+                  (when content
+                    (insert "     --- Commit message ---\n")
+                    (dolist (content-line (split-string content "\n"))
+                      (insert (format "     %s\n" content-line))))
+                  (when diff
+                    (insert "     --- Diff ---\n")
+                    (dolist (diff-line (split-string diff "\n"))
+                      (insert "     " (patchwork-series-detail--propertize-diff-line diff-line) "\n"))))
+                (insert "\n"))))
           (dolist (comment (patchwork-db-get-comments server-url (plist-get patch :id)))
             (let* ((comment-id (plist-get comment :id))
                    (expanded (gethash comment-id patchwork-series-detail--expanded-comments))
@@ -389,19 +439,20 @@ a comment line toggles it open to show the full text."
       (setq patchwork-series-detail--id series-id))
     (switch-to-buffer buffer)))
 
-(defun patchwork-series-detail-toggle-comment ()
-  "Toggle the comment at point between collapsed and fully expanded."
+(defun patchwork-series-detail-toggle-at-point ()
+  "Toggle whatever is at point between collapsed and expanded: a
+comment (its full text) or a patch (its commit message and diff)."
   (interactive)
-  (let ((comment-id (patchwork-series-detail--comment-at-point)))
-    (if (null comment-id)
-        (message "No comment on this line")
-      (unless (hash-table-p patchwork-series-detail--expanded-comments)
-        (setq patchwork-series-detail--expanded-comments (make-hash-table :test #'eql)))
-      (if (gethash comment-id patchwork-series-detail--expanded-comments)
-          (remhash comment-id patchwork-series-detail--expanded-comments)
-        (puthash comment-id t patchwork-series-detail--expanded-comments))
-      (patchwork-view-series-details patchwork-series-detail--server-url
-                                      patchwork-series-detail--id))))
+  (let ((comment-id (patchwork-series-detail--comment-at-point))
+        (patch-id (patchwork-series-detail--patch-at-point)))
+    (cond
+     (comment-id
+      (patchwork-series-detail--toggle-hash 'patchwork-series-detail--expanded-comments
+                                             comment-id))
+     (patch-id
+      (patchwork-series-detail--toggle-hash 'patchwork-series-detail--expanded-patches
+                                             patch-id))
+     (t (message "Nothing to expand/collapse on this line")))))
 
 (defun patchwork-series-detail-reply-at-point ()
   "Reply, as a wide-reply mail message, to the comment or patch at point.
@@ -427,8 +478,8 @@ aren't part of the cached list-view data) and replies to it."
 
 (defvar patchwork-series-detail-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") #'patchwork-series-detail-toggle-comment)
-    (define-key map (kbd "TAB") #'patchwork-series-detail-toggle-comment)
+    (define-key map (kbd "RET") #'patchwork-series-detail-toggle-at-point)
+    (define-key map (kbd "TAB") #'patchwork-series-detail-toggle-at-point)
     (define-key map "r" #'patchwork-series-detail-reply-at-point)
     (define-key map "g" #'patchwork-series-detail-refresh)
     (define-key map "a" #'patchwork-series-detail-apply)

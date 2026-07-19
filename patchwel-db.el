@@ -10,7 +10,7 @@
 (defvar patchwork-db--connection nil
   "Cached connection to the local Patchwork SQLite database.")
 
-(defconst patchwork-db-schema-version 4
+(defconst patchwork-db-schema-version 5
   "Bump whenever `patchwork-db-schema' changes shape.
 A mismatch causes the local cache tables to be dropped and recreated,
 since the database only ever holds re-fetchable cache data.")
@@ -60,6 +60,7 @@ since the database only ever holds re-fetchable cache data.")
        series_position INTEGER,
        check_state TEXT,
        content TEXT,
+       diff TEXT,
        submitter_email TEXT,
        msgid TEXT,
        to_header TEXT,
@@ -248,34 +249,35 @@ also given, further restrict to that project."
 
 (defconst patchwork-db--patch-columns
   "server_url, id, series_id, project_id, state, submitter, delegate, name,
-   date, series_position, check_state, content, submitter_email, msgid,
-   to_header, cc_header, references_header, in_reply_to_header,
+   date, series_position, check_state, content, diff, submitter_email,
+   msgid, to_header, cc_header, references_header, in_reply_to_header,
    updated_at, cached_at")
 
 (defun patchwork-db--patch-row-to-plist (row)
   "Convert a ROW returned from the patches table into a plist."
   (pcase-let ((`(,server-url ,id ,series-id ,project-id ,state ,submitter
                  ,delegate ,name ,date ,series-position ,check-state
-                 ,content ,submitter-email ,msgid ,to ,cc ,references
+                 ,content ,diff ,submitter-email ,msgid ,to ,cc ,references
                  ,in-reply-to ,updated-at ,cached-at)
                 row))
     (list :server-url server-url :id id :series-id series-id
           :project-id project-id :state state :submitter submitter
           :delegate delegate :name name :date date
           :series-position series-position :check-state check-state
-          :content content :submitter-email submitter-email :msgid msgid
-          :to to :cc cc :references references :in-reply-to in-reply-to
-          :updated-at updated-at :cached-at cached-at)))
+          :content content :diff diff :submitter-email submitter-email
+          :msgid msgid :to to :cc cc :references references
+          :in-reply-to in-reply-to :updated-at updated-at :cached-at cached-at)))
 
 (defun patchwork-db-insert-patch (patch)
   "Insert or update PATCH, a plist with patch fields including :server-url.
-:content, :submitter-email, :msgid, :to, :cc, :references, and
+:content, :diff, :submitter-email, :msgid, :to, :cc, :references, and
 :in-reply-to are optional -- populated when the sync layer fetched
 this patch's full detail (the list view used for routine syncing
-doesn't carry mail headers), left nil otherwise."
+doesn't carry the commit message, diff, or mail headers), left nil
+otherwise."
   (sqlite-execute
    (patchwork-db-connection)
-   (format "INSERT INTO patches (%s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   (format "INSERT INTO patches (%s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(server_url, id) DO UPDATE SET
               series_id = excluded.series_id,
               project_id = excluded.project_id,
@@ -287,6 +289,7 @@ doesn't carry mail headers), left nil otherwise."
               series_position = excluded.series_position,
               check_state = excluded.check_state,
               content = excluded.content,
+              diff = excluded.diff,
               submitter_email = excluded.submitter_email,
               msgid = excluded.msgid,
               to_header = excluded.to_header,
@@ -308,6 +311,7 @@ doesn't carry mail headers), left nil otherwise."
          (plist-get patch :series-position)
          (plist-get patch :check-state)
          (plist-get patch :content)
+         (plist-get patch :diff)
          (plist-get patch :submitter-email)
          (plist-get patch :msgid)
          (plist-get patch :to)

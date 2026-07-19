@@ -181,10 +181,11 @@ comment and check totals."
          (comments (ignore-errors (patchwork-api-list-comments server id)))
          (checks (ignore-errors (patchwork-api-list-checks server id)))
          (check-counts (patchwork-cache--count-checks checks))
-         ;; The list view (patch-json, above) doesn't carry mail headers or
-         ;; the commit-message body -- only the single-patch detail
-         ;; endpoint does.  Fetch it now so a later mail reply to this
-         ;; patch doesn't need its own live round-trip; best-effort, since
+         ;; The list view (patch-json, above) doesn't carry mail headers,
+         ;; the commit-message body, or the diff -- only the single-patch
+         ;; detail endpoint does.  Fetch it now so a later mail reply to
+         ;; this patch, or expanding it in the series detail buffer,
+         ;; doesn't need its own live round-trip; best-effort, since
          ;; losing this one extra call shouldn't fail the whole sync (the
          ;; mail layer falls back to a live fetch if these fields are nil).
          (detail (ignore-errors (patchwork-api-get-patch server id)))
@@ -203,6 +204,7 @@ comment and check totals."
                        :series-position position
                        :check-state (plist-get patch-json :check)
                        :content (plist-get detail :content)
+                       :diff (plist-get detail :diff)
                        :submitter-email (plist-get (plist-get detail :submitter) :email)
                        :msgid (plist-get detail :msgid)
                        :to (patchwork-cache--header-value detail-headers :To)
