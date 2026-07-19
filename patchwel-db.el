@@ -10,7 +10,7 @@
 (defvar patchwork-db--connection nil
   "Cached connection to the local Patchwork SQLite database.")
 
-(defconst patchwork-db-schema-version 5
+(defconst patchwork-db-schema-version 6
   "Bump whenever `patchwork-db-schema' changes shape.
 A mismatch causes the local cache tables to be dropped and recreated,
 since the database only ever holds re-fetchable cache data.")
@@ -85,6 +85,17 @@ since the database only ever holds re-fetchable cache data.")
        references_header TEXT,
        in_reply_to_header TEXT,
        PRIMARY KEY (server_url, id))"
+    "CREATE TABLE IF NOT EXISTS checks (
+       server_url TEXT NOT NULL,
+       id INTEGER NOT NULL,
+       patch_id INTEGER,
+       reporter TEXT,
+       state TEXT,
+       context TEXT,
+       description TEXT,
+       target_url TEXT,
+       date TEXT,
+       PRIMARY KEY (server_url, id))"
     "CREATE TABLE IF NOT EXISTS sync_meta (
        key TEXT PRIMARY KEY,
        value TEXT,
@@ -92,7 +103,8 @@ since the database only ever holds re-fetchable cache data.")
     "CREATE INDEX IF NOT EXISTS idx_patches_series ON patches(server_url, series_id)"
     "CREATE INDEX IF NOT EXISTS idx_patches_project ON patches(server_url, project_id)"
     "CREATE INDEX IF NOT EXISTS idx_series_project ON series(server_url, project_slug)"
-    "CREATE INDEX IF NOT EXISTS idx_comments_patch ON comments(server_url, patch_id)")
+    "CREATE INDEX IF NOT EXISTS idx_comments_patch ON comments(server_url, patch_id)"
+    "CREATE INDEX IF NOT EXISTS idx_checks_patch ON checks(server_url, patch_id)")
   "SQL statements used to create the local cache schema.")
 
 (defun patchwork-db-connection ()
@@ -408,6 +420,54 @@ otherwise."
                (list server-url comment-id))))
     (when rows
       (patchwork-db--comment-row-to-plist (car rows)))))
+
+;; -- checks ---------------------------------------------------------------
+
+(defconst patchwork-db--check-columns
+  "server_url, id, patch_id, reporter, state, context, description,
+   target_url, date")
+
+(defun patchwork-db--check-row-to-plist (row)
+  "Convert a ROW returned from the checks table into a plist."
+  (pcase-let ((`(,server-url ,id ,pid ,reporter ,state ,context ,description
+                 ,target-url ,date)
+                row))
+    (list :server-url server-url :id id :patch-id pid :reporter reporter
+          :state state :context context :description description
+          :target-url target-url :date date)))
+
+(defun patchwork-db-insert-check (check)
+  "Insert or update CHECK, a plist with check fields including :server-url."
+  (sqlite-execute
+   (patchwork-db-connection)
+   (format "INSERT INTO checks (%s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(server_url, id) DO UPDATE SET
+              patch_id = excluded.patch_id,
+              reporter = excluded.reporter,
+              state = excluded.state,
+              context = excluded.context,
+              description = excluded.description,
+              target_url = excluded.target_url,
+              date = excluded.date"
+           patchwork-db--check-columns)
+   (list (plist-get check :server-url)
+         (plist-get check :id)
+         (plist-get check :patch-id)
+         (plist-get check :reporter)
+         (plist-get check :state)
+         (plist-get check :context)
+         (plist-get check :description)
+         (plist-get check :target-url)
+         (plist-get check :date))))
+
+(defun patchwork-db-get-checks (server-url patch-id)
+  "Return cached checks on SERVER-URL for PATCH-ID, ordered by date."
+  (mapcar #'patchwork-db--check-row-to-plist
+          (sqlite-select
+           (patchwork-db-connection)
+           (format "SELECT %s FROM checks WHERE server_url = ? AND patch_id = ? ORDER BY date ASC"
+                   patchwork-db--check-columns)
+           (list server-url patch-id))))
 
 ;; -- sync metadata ------------------------------------------------------
 

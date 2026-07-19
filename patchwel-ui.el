@@ -5,6 +5,8 @@
 ;;; Code:
 
 (require 'diff-mode)
+(require 'button)
+(require 'browse-url)
 (require 'patchwel-config)
 (require 'patchwel-db)
 (require 'patchwel-cache)
@@ -49,6 +51,27 @@ of comment activity."
   "Face for a patch's summary line in a series detail buffer,
 distinguishing it at a glance from the comment lines beneath it."
   :group 'patchwork)
+
+(defface patchwork-check-success-face
+  '((t :inherit success))
+  "Face for a CI check line whose state is \"success\"."
+  :group 'patchwork)
+
+(defface patchwork-check-warning-face
+  '((t :inherit warning))
+  "Face for a CI check line whose state is \"warning\"."
+  :group 'patchwork)
+
+(defface patchwork-check-fail-face
+  '((t :inherit error))
+  "Face for a CI check line whose state is \"fail\"."
+  :group 'patchwork)
+
+(defun patchwork-series-detail--check-face (state)
+  "Return the face for a check's STATE, or nil for an unrecognized one."
+  (cond ((equal state "success") 'patchwork-check-success-face)
+        ((equal state "warning") 'patchwork-check-warning-face)
+        ((equal state "fail") 'patchwork-check-fail-face)))
 
 (defface patchwork-comment-quote-face
   '((t :inherit font-lock-comment-face))
@@ -682,6 +705,25 @@ a comment line toggles it open to show the full text."
                     (insert "     --- Diff ---\n")
                     (dolist (diff-line (split-string diff "\n"))
                       (insert "     " (patchwork-series-detail--propertize-diff-line diff-line) "\n"))))
+                (let ((checks (patchwork-db-get-checks server-url patch-id)))
+                  (when checks
+                    (insert "     --- Checks ---\n")
+                    (dolist (check checks)
+                      (insert (propertize
+                               (format "     [%s] %s: %s\n"
+                                       (or (plist-get check :state) "")
+                                       (or (plist-get check :context) "")
+                                       (or (plist-get check :description) ""))
+                               'face (patchwork-series-detail--check-face
+                                      (plist-get check :state))))
+                      (when (plist-get check :target-url)
+                        (insert "         ")
+                        (insert-text-button
+                         (plist-get check :target-url)
+                         'action (lambda (button) (browse-url (button-label button)))
+                         'follow-link t
+                         'help-echo "mouse-2, RET: browse this check's report")
+                        (insert "\n")))))
                 (insert "\n"))))
           (dolist (comment (patchwork-db-get-comments server-url (plist-get patch :id)))
             (let* ((comment-id (plist-get comment :id))

@@ -230,6 +230,17 @@ comment and check totals."
                :cc (patchwork-cache--header-value headers :Cc)
                :references (patchwork-cache--header-value headers :References)
                :in-reply-to (patchwork-cache--header-value headers :In-Reply-To)))))
+    (dolist (check-json checks)
+      (patchwork-db-insert-check
+       (list :server-url server-url
+             :id (plist-get check-json :id)
+             :patch-id id
+             :reporter (patchwork-cache--person-name (plist-get check-json :user))
+             :state (plist-get check-json :state)
+             :context (plist-get check-json :context)
+             :description (plist-get check-json :description)
+             :target-url (plist-get check-json :target_url)
+             :date (plist-get check-json :date))))
     (append patch (list :comments comments) check-counts)))
 
 (defun patchwork-cache--sync-one-series (server series-json)
