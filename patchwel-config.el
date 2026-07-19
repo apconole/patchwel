@@ -151,6 +151,28 @@ match whatever your server(s) actually use."
   :type '(repeat string)
   :group 'patchwork)
 
+(defcustom patchwork-my-identities nil
+  "List of strings (usernames or email addresses) considered \"you\".
+Used for highlighting, e.g. a series assigned to one of these is shown
+with `patchwork-series-mine-face' in the listing buffer.  Matched
+case-insensitively as a substring against a series' assignee."
+  :type '(repeat string)
+  :group 'patchwork)
+
+(defcustom patchwork-series-stale-days 14
+  "Days after which a series with no comments yet is considered stale
+enough to highlight with `patchwork-series-stale-face' in the listing
+buffer."
+  :type 'integer
+  :group 'patchwork)
+
+(defcustom patchwork-series-old-days 30
+  "Days after which a series is considered old enough to highlight with
+`patchwork-series-old-face' in the listing buffer, regardless of
+comment activity."
+  :type 'integer
+  :group 'patchwork)
+
 (defun patchwork-server-slug (server)
   "Return a filesystem/buffer-name-safe identifier for SERVER's URL.
 Includes the port when the URL specifies one, since two distinct

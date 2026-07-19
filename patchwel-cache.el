@@ -68,7 +68,7 @@ re-signals the last error rather than silently returning nothing."
              (unless formats (signal (car err) (cdr err))))))
         result))))
 
-(defun patchwork-cache--parse-server-time (date-str)
+(defun patchwork-parse-server-time (date-str)
   "Parse DATE-STR, a raw Patchwork API date field, as a UTC Lisp time value.
 Patchwork's JSON date fields (e.g. \"2026-07-18T14:41:06.870773\")
 omit any timezone marker even though the value is actually UTC.
@@ -85,7 +85,7 @@ offset or \"Z\", it is parsed as-is."
 (defun patchwork-cache--after-cutoff-p (date-str cutoff-time)
   "Return non-nil if DATE-STR is at or after CUTOFF-TIME.
 An unparseable DATE-STR is kept rather than silently dropped."
-  (let ((parsed (ignore-errors (patchwork-cache--parse-server-time date-str))))
+  (let ((parsed (ignore-errors (patchwork-parse-server-time date-str))))
     (or (null parsed) (not (time-less-p parsed cutoff-time)))))
 
 (defun patchwork-cache--get (obj &rest keys)

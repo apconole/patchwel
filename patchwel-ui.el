@@ -17,6 +17,109 @@
         ((>= (length date) 10) (substring date 0 10))
         (t date)))
 
+(defface patchwork-series-mine-face
+  '((t :inherit font-lock-keyword-face :weight bold))
+  "Face for a series assigned to one of `patchwork-my-identities'."
+  :group 'patchwork)
+
+(defface patchwork-series-stale-face
+  '((t :inherit warning))
+  "Face for a series old enough (`patchwork-series-stale-days') with no
+comments yet -- likely needs a nudge."
+  :group 'patchwork)
+
+(defface patchwork-series-old-face
+  '((t :inherit shadow))
+  "Face for a series older than `patchwork-series-old-days', regardless
+of comment activity."
+  :group 'patchwork)
+
+(defface patchwork-series-title-face
+  '((t :inherit font-lock-function-name-face))
+  "Face for a series' title column in the listing buffer."
+  :group 'patchwork)
+
+(defface patchwork-series-date-face
+  '((t :inherit font-lock-comment-face))
+  "Face for a series' submitted-date column in the listing buffer."
+  :group 'patchwork)
+
+(defface patchwork-patch-line-face
+  '((t :inherit font-lock-keyword-face))
+  "Face for a patch's summary line in a series detail buffer,
+distinguishing it at a glance from the comment lines beneath it."
+  :group 'patchwork)
+
+(defface patchwork-comment-quote-face
+  '((t :inherit font-lock-comment-face))
+  "Face for quoted lines (any nesting depth) within an expanded
+comment's body, distinguishing them from the actual reply text."
+  :group 'patchwork)
+
+(defface patchwork-comment-reply-face
+  '((t :inherit default))
+  "Face for non-quoted lines -- the actual reply text -- within an
+expanded comment's body."
+  :group 'patchwork)
+
+(defun patchwork-series-detail--propertize-comment-line (line)
+  "Return LINE propertized as quoted or reply text, whichever it looks
+like: a leading `>' (at any nesting depth, ignoring leading
+whitespace) marks a quoted line."
+  (propertize line 'face
+              (if (string-match-p "\\`[ \t]*>" line)
+                  'patchwork-comment-quote-face
+                'patchwork-comment-reply-face)))
+
+(defun patchwork-series--age-days (series)
+  "Return SERIES' age in days since it was submitted, or nil if its
+submitted-at date is missing or unparseable."
+  (let ((submitted (plist-get series :submitted-at)))
+    (when submitted
+      (let ((parsed (ignore-errors (patchwork-parse-server-time submitted))))
+        (when parsed
+          (/ (float-time (time-subtract (current-time) parsed)) 86400.0))))))
+
+(defun patchwork-series--rule-mine (series)
+  "Highlight rule: SERIES is assigned to one of `patchwork-my-identities'."
+  (let ((assignee (plist-get series :assignee)))
+    (when (and patchwork-my-identities assignee)
+      (let ((assignee (downcase assignee)))
+        (when (seq-some (lambda (id) (string-match-p (regexp-quote (downcase id)) assignee))
+                         patchwork-my-identities)
+          'patchwork-series-mine-face)))))
+
+(defun patchwork-series--rule-stale (series)
+  "Highlight rule: SERIES is old (`patchwork-series-stale-days') with no
+comments yet."
+  (let ((age (patchwork-series--age-days series)))
+    (when (and age (>= age patchwork-series-stale-days)
+               (= (or (plist-get series :comment-count) 0) 0))
+      'patchwork-series-stale-face)))
+
+(defun patchwork-series--rule-old (series)
+  "Highlight rule: SERIES is older than `patchwork-series-old-days'."
+  (let ((age (patchwork-series--age-days series)))
+    (when (and age (>= age patchwork-series-old-days))
+      'patchwork-series-old-face)))
+
+(defcustom patchwork-series-highlight-rules
+  '(patchwork-series--rule-mine
+    patchwork-series--rule-stale
+    patchwork-series--rule-old)
+  "Functions used to highlight a row in the series listing buffer.
+Each is called with a series plist and should return a face, or nil.
+Applied in order; the first to return non-nil wins.  Extend this list
+with your own predicate functions for custom highlighting -- e.g. one
+that checks `plist-get series :state' or any other field."
+  :type '(repeat function)
+  :group 'patchwork)
+
+(defun patchwork-series--row-face (series)
+  "Return the face to use for SERIES' row, per
+`patchwork-series-highlight-rules', or nil for none."
+  (seq-some (lambda (rule) (funcall rule series)) patchwork-series-highlight-rules))
+
 (defvar-local patchwork-series--filter nil
   "Current filter for this series listing buffer.
 A plist with keys :states (list of state strings, or nil for all),
@@ -53,37 +156,68 @@ change at runtime with `patchwork-series-set-filter' or
       (push (format "author:%s" (plist-get filter :author)) parts))
     (if parts (string-join (nreverse parts) " ") "all")))
 
-(defconst patchwork-series--row-format
-  "  %-6s %-34.34s %-14.14s %-10s %5s %4s %4s %5s %4s %5s %5s %5s %-12.12s %-16s"
-  "Format string for one series row and for the column header row.
-Columns: id, title, author, submitted, comments, ack, review, test,
-fixes, check-success, check-warning, check-fail, assignee, state.
-Server and project aren't columns here since each group's header line
-already names them once for every series underneath it.")
+(defconst patchwork-series--column-formats
+  '("%-6s" "%-34.34s" "%-14.14s" "%-10s" "%5s" "%4s" "%4s" "%5s" "%4s"
+    "%5s" "%5s" "%5s" "%-12.12s" "%-16s")
+  "Per-column format specs, in order, shared by
+`patchwork-series--header-row-string' and `patchwork-series--row-string'
+so their widths can never drift apart.  Columns: id, title, author,
+submitted, comments, ack, review, test, fixes, check-success,
+check-warning, check-fail, assignee, state.  Server and project aren't
+columns here since each group's header line already names them once
+for every series underneath it.")
+
+(defun patchwork-series--format-columns (values &optional faces)
+  "Format VALUES (one per `patchwork-series--column-formats' entry) into
+a single row string, left-padded and joined by single spaces.  FACES,
+if given, is a parallel list of faces (or nil) applied to each
+formatted column individually."
+  (concat "  "
+          (mapconcat
+           #'identity
+           (seq-mapn (lambda (fmt value face)
+                       (let ((text (format fmt value)))
+                         (if face (propertize text 'face face) text)))
+                     patchwork-series--column-formats
+                     values
+                     (or faces (make-list (length patchwork-series--column-formats) nil)))
+           " ")))
 
 (defun patchwork-series--header-row-string ()
-  "Return the column header line matching `patchwork-series--row-format'."
-  (format patchwork-series--row-format
-          "ID" "Title" "Author" "Submitted" "Cmts" "Ack" "Rev" "Test" "Fix"
-          "Succ" "Warn" "Fail" "Assignee" "State"))
+  "Return the column header line."
+  (patchwork-series--format-columns
+   '("ID" "Title" "Author" "Submitted" "Cmts" "Ack" "Rev" "Test" "Fix"
+     "Succ" "Warn" "Fail" "Assignee" "State")))
 
 (defun patchwork-series--row-string (series)
-  "Format SERIES as one aligned display row."
-  (format patchwork-series--row-format
-          (plist-get series :id)
-          (or (plist-get series :name) "")
-          (or (plist-get series :submitter) "")
-          (patchwork-series--format-date (plist-get series :submitted-at))
-          (or (plist-get series :comment-count) 0)
-          (or (plist-get series :ack-count) 0)
-          (or (plist-get series :review-count) 0)
-          (or (plist-get series :test-count) 0)
-          (or (plist-get series :fixes-count) 0)
-          (or (plist-get series :check-success) 0)
-          (or (plist-get series :check-warning) 0)
-          (or (plist-get series :check-fail) 0)
-          (or (plist-get series :assignee) "")
-          (or (plist-get series :state) "")))
+  "Format SERIES as one aligned display row.
+The title and submitted-date columns get their own faces
+\(`patchwork-series-title-face'/`patchwork-series-date-face'); if any
+`patchwork-series-highlight-rules' rule matches, its face is then
+layered over the whole row (filling in gaps left by the per-column
+faces, via `add-face-text-property' with APPEND so it doesn't clobber
+them)."
+  (let* ((row (patchwork-series--format-columns
+               (list (plist-get series :id)
+                     (or (plist-get series :name) "")
+                     (or (plist-get series :submitter) "")
+                     (patchwork-series--format-date (plist-get series :submitted-at))
+                     (or (plist-get series :comment-count) 0)
+                     (or (plist-get series :ack-count) 0)
+                     (or (plist-get series :review-count) 0)
+                     (or (plist-get series :test-count) 0)
+                     (or (plist-get series :fixes-count) 0)
+                     (or (plist-get series :check-success) 0)
+                     (or (plist-get series :check-warning) 0)
+                     (or (plist-get series :check-fail) 0)
+                     (or (plist-get series :assignee) "")
+                     (or (plist-get series :state) ""))
+               (list nil 'patchwork-series-title-face nil 'patchwork-series-date-face
+                     nil nil nil nil nil nil nil nil nil nil)))
+         (row-face (patchwork-series--row-face series)))
+    (when row-face
+      (add-face-text-property 0 (length row) row-face t row))
+    row))
 
 (defvar-local patchwork-series--collapsed nil
   "Hash table of (SERVER-URL . PROJECT-SLUG) group key -> non-nil if
@@ -408,7 +542,8 @@ a comment line toggles it open to show the full text."
                              patch-id
                              (or (plist-get patch :state) "")
                              (or (plist-get patch :name) ""))
-                     'patchwork-patch-id patch-id))
+                     'patchwork-patch-id patch-id
+                     'face 'patchwork-patch-line-face))
             (when expanded
               (let ((content (plist-get patch :content))
                     (diff (plist-get patch :diff)))
@@ -437,7 +572,9 @@ a comment line toggles it open to show the full text."
                        'patchwork-comment-id comment-id))
               (when expanded
                 (dolist (content-line (split-string content "\n"))
-                  (insert (format "         %s\n" content-line)))
+                  (insert "         "
+                          (patchwork-series-detail--propertize-comment-line content-line)
+                          "\n"))
                 (insert "\n")))))
         (goto-char (point-min))
         (forward-line (1- line)))
