@@ -417,6 +417,17 @@ over from previous successful syncs of a server that just failed."
                   (error-message-string err))))))
   (patchwork-db-query-series))
 
+(defun patchwork-cache-sync-series (server series-id)
+  "Fetch and cache SERIES-ID from SERVER directly -- its patches,
+comments, and checks, same as a routine sync would -- regardless of
+`patchwork-sync-lookback-days' or which project it belongs to (a
+series' own data already says that).  Useful for pulling in a specific
+series that falls outside the range any routine sync would ever
+reach, e.g. one you already know the id of from browsing the
+Patchwork web UI directly.  Returns the cached series plist."
+  (patchwork-cache--sync-one-series server (patchwork-api-get-series server series-id))
+  (patchwork-db-get-series (plist-get server :url) series-id))
+
 (provide 'patchwel-cache)
 
 ;;; patchwel-cache.el ends here

@@ -26,15 +26,17 @@ request just fails. Instead:
 - Needs a small local queue (a new sqlite table, most likely) and a
   place to report queued/failed/conflicting changes back to the user.
 
-* TODO Per-series sync from the series detail buffer
+* DONE Per-series sync from the series detail buffer
 
-Right now, refreshing (~g~) only exists at the whole
-server/project level via ~patchwork-cache-sync~. Add a sync path that
-can be triggered from a ~*patchwork-series-<server>-<id>*~ detail
-buffer and only re-fetches that one series (and its patches, comments,
-checks) rather than the server/project it belongs to. Useful for
-pulling in a known, single update without waiting on or triggering a
-full project-level sync.
+~M-x patchwork-fetch-series~ (~G~ in the main listing buffer) prompts
+for a server and a series id, fetches and caches that one series --
+its patches, comments, and checks, same as a routine sync -- via the
+new ~patchwork-cache-sync-series~, regardless of
+~patchwork-sync-lookback-days~ or which project it belongs to (a
+series' own data already says that, so no project prompt is needed),
+then opens its detail buffer. Verified against a real ~2023 series on
+patchwork.ozlabs.org, over two years outside any normal sync window,
+fetched cleanly with its patch, all three comments, and check counts.
 
 * TODO Threaded comment view across a series' patches
 

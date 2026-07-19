@@ -245,6 +245,7 @@ remove that dimension (show every value for it)."
     (define-key map (kbd "RET") #'patchwork-series-dwim)
     (define-key map (kbd "TAB") #'patchwork-series-dwim)
     (define-key map "g" #'patchwork-series-refresh)
+    (define-key map "G" #'patchwork-fetch-series)
     (define-key map "a" #'patchwork-series-apply-at-point)
     (define-key map "f" #'patchwork-series-set-filter)
     (define-key map "F" #'patchwork-series-reset-filter)
@@ -277,6 +278,24 @@ are currently active (see `patchwork-series-set-filter')."
         (setq patchwork-series--filter (list :states patchwork-default-state-filter)))
       (patchwork-series--render))
     (switch-to-buffer buffer)))
+
+;;;###autoload
+(defun patchwork-fetch-series (server-url series-id)
+  "Fetch and cache a specific series by id from SERVER-URL, regardless
+of `patchwork-sync-lookback-days' or the main listing buffer's usual
+sync range, then open its detail buffer.  Useful for a series you
+already know the id of -- e.g. found by browsing the Patchwork web UI
+directly -- that's too old, or otherwise outside the range, for a
+routine sync to ever reach on its own."
+  (interactive
+   (list (completing-read "Patchwork server: "
+                           (mapcar (lambda (s) (plist-get s :url)) patchwork-servers)
+                           nil t)
+         (read-number "Series id: ")))
+  (let ((server (or (patchwork-servers-find server-url)
+                     (error "Unknown Patchwork server: %s" server-url))))
+    (patchwork-cache-sync-series server series-id)
+    (patchwork-view-series-details server-url series-id)))
 
 (defvar-local patchwork-series-detail--server-url nil
   "Server URL that the current detail buffer is showing a series from.")
@@ -420,10 +439,20 @@ aren't part of the cached list-view data) and replies to it."
 (define-derived-mode patchwork-series-detail-mode special-mode "Patchwork-Series-Detail"
   "Major mode for viewing details of a single Patchwork series.")
 
-(defun patchwork-series-detail-refresh ()
-  "Refresh the current series detail buffer from the local cache."
-  (interactive)
+(defun patchwork-series-detail-refresh (&optional force)
+  "Refresh the current series detail buffer.
+With a prefix argument, first re-fetch this series from the server
+\(via `patchwork-cache-sync-series', regardless of
+`patchwork-sync-lookback-days') rather than just re-rendering whatever
+is already cached -- use this to pull in real updates to the series
+you're currently looking at, without leaving this buffer."
+  (interactive "P")
   (when patchwork-series-detail--id
+    (when force
+      (let ((server (or (patchwork-servers-find patchwork-series-detail--server-url)
+                         (error "Unknown Patchwork server: %s"
+                                patchwork-series-detail--server-url))))
+        (patchwork-cache-sync-series server patchwork-series-detail--id)))
     (patchwork-view-series-details patchwork-series-detail--server-url
                                     patchwork-series-detail--id)))
 
