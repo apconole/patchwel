@@ -288,6 +288,76 @@ collapsible `[+]'/`[-]' group headers, preserving the current line."
   "Return the (SERVER-URL . PROJECT-SLUG) of the group header at point, or nil."
   (get-text-property (line-beginning-position) 'patchwork-group))
 
+(defun patchwork-series--server-at-point ()
+  "Return the server-url context at point: from the group header if
+point is on one, or from the series entry if point is on a series
+row.  nil if point is on neither."
+  (or (car (patchwork-series-group-at-point))
+      (car (patchwork-series-at-point))))
+
+(defun patchwork-series-next ()
+  "Move point to the next series row."
+  (interactive)
+  (let ((start (point)))
+    (forward-line 1)
+    (while (and (not (eobp)) (not (patchwork-series-at-point)))
+      (forward-line 1))
+    (if (patchwork-series-at-point)
+        t
+      (goto-char start)
+      (message "No next series")
+      nil)))
+
+(defun patchwork-series-prev ()
+  "Move point to the previous series row."
+  (interactive)
+  (let ((start (point)))
+    (forward-line -1)
+    (while (and (not (bobp)) (not (patchwork-series-at-point)))
+      (forward-line -1))
+    (if (patchwork-series-at-point)
+        t
+      (goto-char start)
+      (message "No previous series")
+      nil)))
+
+(defun patchwork-series-next-server ()
+  "Move point to the next group header for a server different from the
+one at point -- i.e. skip over any remaining project groups under the
+current server."
+  (interactive)
+  (let ((current (patchwork-series--server-at-point))
+        (start (point)))
+    (forward-line 1)
+    (while (and (not (eobp))
+                (let ((group (patchwork-series-group-at-point)))
+                  (not (and group (not (equal (car group) current))))))
+      (forward-line 1))
+    (let ((group (patchwork-series-group-at-point)))
+      (if (and group (not (equal (car group) current)))
+          t
+        (goto-char start)
+        (message "No next server")
+        nil))))
+
+(defun patchwork-series-prev-server ()
+  "Move point to the previous group header for a server different from
+the one at point."
+  (interactive)
+  (let ((current (patchwork-series--server-at-point))
+        (start (point)))
+    (forward-line -1)
+    (while (and (not (bobp))
+                (let ((group (patchwork-series-group-at-point)))
+                  (not (and group (not (equal (car group) current))))))
+      (forward-line -1))
+    (let ((group (patchwork-series-group-at-point)))
+      (if (and group (not (equal (car group) current)))
+          t
+        (goto-char start)
+        (message "No previous server")
+        nil))))
+
 (defun patchwork-series-refresh (&optional force)
   "Re-sync from every configured Patchwork server and redraw the listing.
 With a prefix argument, do a full resync (`patchwork-sync-lookback-days'
@@ -384,11 +454,18 @@ remove that dimension (show every value for it)."
     (define-key map "a" #'patchwork-series-apply-at-point)
     (define-key map "f" #'patchwork-series-set-filter)
     (define-key map "F" #'patchwork-series-reset-filter)
+    (define-key map "n" #'patchwork-series-next)
+    (define-key map "p" #'patchwork-series-prev)
+    (define-key map "N" #'patchwork-series-next-server)
+    (define-key map "P" #'patchwork-series-prev-server)
     (define-key map "+" #'patchwork-series-expand-all)
     (define-key map "-" #'patchwork-series-collapse-all)
     (define-key map "q" #'quit-window)
     map)
-  "Keymap for `patchwork-series-mode'.")
+  "Keymap for `patchwork-series-mode'.
+n/p move to the next/previous series row; N/P move to the next/
+previous server, skipping over any remaining project groups under the
+current one.")
 
 (define-derived-mode patchwork-series-mode special-mode "Patchwork-Series"
   "Major mode listing cached Patchwork series, grouped by server and
@@ -463,6 +540,54 @@ across `g' refreshes of the same buffer.")
 (defun patchwork-series-detail--patch-at-point ()
   "Return the patch id at point in a detail buffer, or nil."
   (get-text-property (line-beginning-position) 'patchwork-patch-id))
+
+(defun patchwork-series-detail--goto-next-with-property (prop)
+  "Move point to the next line (strictly after the current one) where
+text property PROP is non-nil.  Message and leave point alone if there
+is no such line."
+  (let ((start (point)))
+    (forward-line 1)
+    (while (and (not (eobp)) (not (get-text-property (line-beginning-position) prop)))
+      (forward-line 1))
+    (if (get-text-property (line-beginning-position) prop)
+        t
+      (goto-char start)
+      (message "No next %s" (if (eq prop 'patchwork-patch-id) "patch" "comment"))
+      nil)))
+
+(defun patchwork-series-detail--goto-prev-with-property (prop)
+  "Move point to the previous line (strictly before the current one)
+where text property PROP is non-nil.  Message and leave point alone if
+there is no such line."
+  (let ((start (point)))
+    (forward-line -1)
+    (while (and (not (bobp)) (not (get-text-property (line-beginning-position) prop)))
+      (forward-line -1))
+    (if (get-text-property (line-beginning-position) prop)
+        t
+      (goto-char start)
+      (message "No previous %s" (if (eq prop 'patchwork-patch-id) "patch" "comment"))
+      nil)))
+
+(defun patchwork-series-detail-next-patch ()
+  "Move point to the next patch's summary line."
+  (interactive)
+  (patchwork-series-detail--goto-next-with-property 'patchwork-patch-id))
+
+(defun patchwork-series-detail-prev-patch ()
+  "Move point to the previous patch's summary line."
+  (interactive)
+  (patchwork-series-detail--goto-prev-with-property 'patchwork-patch-id))
+
+(defun patchwork-series-detail-next-comment ()
+  "Move point to the next comment's summary line."
+  (interactive)
+  (patchwork-series-detail--goto-next-with-property 'patchwork-comment-id))
+
+(defun patchwork-series-detail-prev-comment ()
+  "Move point to the previous comment's summary line."
+  (interactive)
+  (patchwork-series-detail--goto-prev-with-property 'patchwork-comment-id))
 
 (defun patchwork-series-detail--toggle-hash (hash-var key)
   "Toggle KEY's presence in the hash table held by buffer-local
@@ -621,6 +746,28 @@ aren't part of the cached list-view data) and replies to it."
         (patchwork-mail-reply-to-patch server patch-id)))
      (t (message "Nothing to reply to on this line")))))
 
+(defun patchwork-series-detail-expand-all ()
+  "Expand every patch and comment in this series detail buffer."
+  (interactive)
+  (setq patchwork-series-detail--expanded-patches (make-hash-table :test #'eql))
+  (setq patchwork-series-detail--expanded-comments (make-hash-table :test #'eql))
+  (dolist (patch (patchwork-db-get-series-patches patchwork-series-detail--server-url
+                                                   patchwork-series-detail--id))
+    (puthash (plist-get patch :id) t patchwork-series-detail--expanded-patches)
+    (dolist (comment (patchwork-db-get-comments patchwork-series-detail--server-url
+                                                 (plist-get patch :id)))
+      (puthash (plist-get comment :id) t patchwork-series-detail--expanded-comments)))
+  (patchwork-view-series-details patchwork-series-detail--server-url
+                                  patchwork-series-detail--id))
+
+(defun patchwork-series-detail-collapse-all ()
+  "Collapse every patch and comment in this series detail buffer."
+  (interactive)
+  (setq patchwork-series-detail--expanded-patches (make-hash-table :test #'eql))
+  (setq patchwork-series-detail--expanded-comments (make-hash-table :test #'eql))
+  (patchwork-view-series-details patchwork-series-detail--server-url
+                                  patchwork-series-detail--id))
+
 (defvar patchwork-series-detail-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'patchwork-series-detail-toggle-at-point)
@@ -628,9 +775,17 @@ aren't part of the cached list-view data) and replies to it."
     (define-key map "r" #'patchwork-series-detail-reply-at-point)
     (define-key map "g" #'patchwork-series-detail-refresh)
     (define-key map "a" #'patchwork-series-detail-apply)
+    (define-key map "n" #'patchwork-series-detail-next-patch)
+    (define-key map "p" #'patchwork-series-detail-prev-patch)
+    (define-key map "N" #'patchwork-series-detail-next-comment)
+    (define-key map "P" #'patchwork-series-detail-prev-comment)
+    (define-key map "+" #'patchwork-series-detail-expand-all)
+    (define-key map "-" #'patchwork-series-detail-collapse-all)
     (define-key map "q" #'quit-window)
     map)
-  "Keymap for `patchwork-series-detail-mode'.")
+  "Keymap for `patchwork-series-detail-mode'.
+n/p move to the next/previous patch; N/P move to the next/previous
+comment; +/- expand/collapse everything in this buffer.")
 
 (define-derived-mode patchwork-series-detail-mode special-mode "Patchwork-Series-Detail"
   "Major mode for viewing details of a single Patchwork series.")

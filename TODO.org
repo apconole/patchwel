@@ -83,3 +83,15 @@ both from `message-reply-headers' (unset here, since there's no real
 Gnus reply buffer behind this), silently dropping whatever was
 supplied. Add them afterward with ~message-add-header~ instead, which
 only inserts a header if not already present.
+
+* DONE Expand-all/collapse-all in the series detail buffer
+
+~+~/~-~ (~patchwork-series-detail-expand-all~/
+~patchwork-series-detail-collapse-all~) now expand/collapse every
+patch and comment in the current series detail buffer at once,
+mirroring the main listing buffer's group-level ~+~/~-~. Also added,
+same session: ~n~/~p~ move to the next/previous patch's summary line,
+~N~/~P~ to the next/previous comment's, regardless of expand state
+\(the id properties live only on the summary line itself, never on the
+expanded content beneath it, so navigation is just a line-by-line walk
+checking for the right text property).
