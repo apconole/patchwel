@@ -24,6 +24,7 @@
 (require 'patchwel-api)
 (require 'patchwel-cache)
 (require 'patchwel-git)
+(require 'patchwel-mail)
 (require 'patchwel-ui)
 
 (provide 'patchwel)

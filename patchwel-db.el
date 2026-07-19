@@ -10,7 +10,7 @@
 (defvar patchwork-db--connection nil
   "Cached connection to the local Patchwork SQLite database.")
 
-(defconst patchwork-db-schema-version 2
+(defconst patchwork-db-schema-version 4
   "Bump whenever `patchwork-db-schema' changes shape.
 A mismatch causes the local cache tables to be dropped and recreated,
 since the database only ever holds re-fetchable cache data.")
@@ -59,6 +59,13 @@ since the database only ever holds re-fetchable cache data.")
        date TEXT,
        series_position INTEGER,
        check_state TEXT,
+       content TEXT,
+       submitter_email TEXT,
+       msgid TEXT,
+       to_header TEXT,
+       cc_header TEXT,
+       references_header TEXT,
+       in_reply_to_header TEXT,
        updated_at TEXT,
        cached_at TEXT,
        PRIMARY KEY (server_url, id))"
@@ -69,6 +76,13 @@ since the database only ever holds re-fetchable cache data.")
        author TEXT,
        date TEXT,
        content TEXT,
+       msgid TEXT,
+       subject TEXT,
+       submitter_email TEXT,
+       to_header TEXT,
+       cc_header TEXT,
+       references_header TEXT,
+       in_reply_to_header TEXT,
        PRIMARY KEY (server_url, id))"
     "CREATE TABLE IF NOT EXISTS sync_meta (
        key TEXT PRIMARY KEY,
@@ -234,25 +248,34 @@ also given, further restrict to that project."
 
 (defconst patchwork-db--patch-columns
   "server_url, id, series_id, project_id, state, submitter, delegate, name,
-   date, series_position, check_state, updated_at, cached_at")
+   date, series_position, check_state, content, submitter_email, msgid,
+   to_header, cc_header, references_header, in_reply_to_header,
+   updated_at, cached_at")
 
 (defun patchwork-db--patch-row-to-plist (row)
   "Convert a ROW returned from the patches table into a plist."
   (pcase-let ((`(,server-url ,id ,series-id ,project-id ,state ,submitter
                  ,delegate ,name ,date ,series-position ,check-state
-                 ,updated-at ,cached-at)
+                 ,content ,submitter-email ,msgid ,to ,cc ,references
+                 ,in-reply-to ,updated-at ,cached-at)
                 row))
     (list :server-url server-url :id id :series-id series-id
           :project-id project-id :state state :submitter submitter
           :delegate delegate :name name :date date
           :series-position series-position :check-state check-state
+          :content content :submitter-email submitter-email :msgid msgid
+          :to to :cc cc :references references :in-reply-to in-reply-to
           :updated-at updated-at :cached-at cached-at)))
 
 (defun patchwork-db-insert-patch (patch)
-  "Insert or update PATCH, a plist with patch fields including :server-url."
+  "Insert or update PATCH, a plist with patch fields including :server-url.
+:content, :submitter-email, :msgid, :to, :cc, :references, and
+:in-reply-to are optional -- populated when the sync layer fetched
+this patch's full detail (the list view used for routine syncing
+doesn't carry mail headers), left nil otherwise."
   (sqlite-execute
    (patchwork-db-connection)
-   (format "INSERT INTO patches (%s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   (format "INSERT INTO patches (%s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(server_url, id) DO UPDATE SET
               series_id = excluded.series_id,
               project_id = excluded.project_id,
@@ -263,6 +286,13 @@ also given, further restrict to that project."
               date = excluded.date,
               series_position = excluded.series_position,
               check_state = excluded.check_state,
+              content = excluded.content,
+              submitter_email = excluded.submitter_email,
+              msgid = excluded.msgid,
+              to_header = excluded.to_header,
+              cc_header = excluded.cc_header,
+              references_header = excluded.references_header,
+              in_reply_to_header = excluded.in_reply_to_header,
               updated_at = excluded.updated_at,
               cached_at = excluded.cached_at"
            patchwork-db--patch-columns)
@@ -277,6 +307,13 @@ also given, further restrict to that project."
          (plist-get patch :date)
          (plist-get patch :series-position)
          (plist-get patch :check-state)
+         (plist-get patch :content)
+         (plist-get patch :submitter-email)
+         (plist-get patch :msgid)
+         (plist-get patch :to)
+         (plist-get patch :cc)
+         (plist-get patch :references)
+         (plist-get patch :in-reply-to)
          (plist-get patch :updated-at)
          (current-time-string))))
 
@@ -302,35 +339,71 @@ also given, further restrict to that project."
 
 ;; -- comments ---------------------------------------------------------------
 
+(defconst patchwork-db--comment-columns
+  "server_url, id, patch_id, author, date, content, msgid, subject,
+   submitter_email, to_header, cc_header, references_header,
+   in_reply_to_header")
+
+(defun patchwork-db--comment-row-to-plist (row)
+  "Convert a ROW returned from the comments table into a plist."
+  (pcase-let ((`(,server-url ,id ,pid ,author ,date ,content ,msgid ,subject
+                 ,submitter-email ,to ,cc ,references ,in-reply-to)
+                row))
+    (list :server-url server-url :id id :patch-id pid :author author
+          :date date :content content :msgid msgid :subject subject
+          :submitter-email submitter-email :to to :cc cc
+          :references references :in-reply-to in-reply-to)))
+
 (defun patchwork-db-insert-comment (comment)
   "Insert or update COMMENT, a plist with comment fields including :server-url."
   (sqlite-execute
    (patchwork-db-connection)
-   "INSERT INTO comments (server_url, id, patch_id, author, date, content)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(server_url, id) DO UPDATE SET
-      patch_id = excluded.patch_id,
-      author = excluded.author,
-      date = excluded.date,
-      content = excluded.content"
+   (format "INSERT INTO comments (%s) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(server_url, id) DO UPDATE SET
+              patch_id = excluded.patch_id,
+              author = excluded.author,
+              date = excluded.date,
+              content = excluded.content,
+              msgid = excluded.msgid,
+              subject = excluded.subject,
+              submitter_email = excluded.submitter_email,
+              to_header = excluded.to_header,
+              cc_header = excluded.cc_header,
+              references_header = excluded.references_header,
+              in_reply_to_header = excluded.in_reply_to_header"
+           patchwork-db--comment-columns)
    (list (plist-get comment :server-url)
          (plist-get comment :id)
          (plist-get comment :patch-id)
          (plist-get comment :author)
          (plist-get comment :date)
-         (plist-get comment :content))))
+         (plist-get comment :content)
+         (plist-get comment :msgid)
+         (plist-get comment :subject)
+         (plist-get comment :submitter-email)
+         (plist-get comment :to)
+         (plist-get comment :cc)
+         (plist-get comment :references)
+         (plist-get comment :in-reply-to))))
 
 (defun patchwork-db-get-comments (server-url patch-id)
   "Return cached comments on SERVER-URL for PATCH-ID, ordered by date."
-  (mapcar (lambda (row)
-            (pcase-let ((`(,server-url ,id ,pid ,author ,date ,content) row))
-              (list :server-url server-url :id id :patch-id pid
-                    :author author :date date :content content)))
+  (mapcar #'patchwork-db--comment-row-to-plist
           (sqlite-select
            (patchwork-db-connection)
-           "SELECT server_url, id, patch_id, author, date, content FROM comments
-            WHERE server_url = ? AND patch_id = ? ORDER BY date ASC"
+           (format "SELECT %s FROM comments WHERE server_url = ? AND patch_id = ? ORDER BY date ASC"
+                   patchwork-db--comment-columns)
            (list server-url patch-id))))
+
+(defun patchwork-db-get-comment (server-url comment-id)
+  "Return the cached comment plist for COMMENT-ID on SERVER-URL, or nil."
+  (let ((rows (sqlite-select
+               (patchwork-db-connection)
+               (format "SELECT %s FROM comments WHERE server_url = ? AND id = ?"
+                       patchwork-db--comment-columns)
+               (list server-url comment-id))))
+    (when rows
+      (patchwork-db--comment-row-to-plist (car rows)))))
 
 ;; -- sync metadata ------------------------------------------------------
 

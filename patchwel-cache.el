@@ -79,6 +79,17 @@ PERSON may be a plist with :name/:email, a bare string, or nil."
         ((plist-get person :username) (plist-get person :username))
         (t nil)))
 
+(defun patchwork-cache--header-value (headers key)
+  "Return HEADERS's KEY as a single string, or nil if absent.
+Patchwork occasionally reports a raw mail header as a list of repeated
+values (e.g. multiple Received: lines) rather than a single string;
+join those with \", \" so callers always get a plain string."
+  (let ((value (plist-get headers key)))
+    (cond ((null value) nil)
+          ((stringp value) value)
+          ((listp value) (string-join value ", "))
+          (t (format "%s" value)))))
+
 (defun patchwork-cache--upsert-project-from (server obj)
   "Upsert the project embedded in OBJ (a series or patch payload from SERVER).
 Return a (id . slug) cons, or nil if OBJ has no project information."
@@ -145,6 +156,14 @@ comment and check totals."
          (comments (ignore-errors (patchwork-api-list-comments server id)))
          (checks (ignore-errors (patchwork-api-list-checks server id)))
          (check-counts (patchwork-cache--count-checks checks))
+         ;; The list view (patch-json, above) doesn't carry mail headers or
+         ;; the commit-message body -- only the single-patch detail
+         ;; endpoint does.  Fetch it now so a later mail reply to this
+         ;; patch doesn't need its own live round-trip; best-effort, since
+         ;; losing this one extra call shouldn't fail the whole sync (the
+         ;; mail layer falls back to a live fetch if these fields are nil).
+         (detail (ignore-errors (patchwork-api-get-patch server id)))
+         (detail-headers (plist-get detail :headers))
          (patch (list :server-url server-url
                        :id id
                        :series-id series-id
@@ -158,17 +177,32 @@ comment and check totals."
                        :date (plist-get patch-json :date)
                        :series-position position
                        :check-state (plist-get patch-json :check)
+                       :content (plist-get detail :content)
+                       :submitter-email (plist-get (plist-get detail :submitter) :email)
+                       :msgid (plist-get detail :msgid)
+                       :to (patchwork-cache--header-value detail-headers :To)
+                       :cc (patchwork-cache--header-value detail-headers :Cc)
+                       :references (patchwork-cache--header-value detail-headers :References)
+                       :in-reply-to (patchwork-cache--header-value detail-headers :In-Reply-To)
                        :updated-at (plist-get patch-json :date))))
     (patchwork-db-insert-patch patch)
     (dolist (comment-json comments)
-      (patchwork-db-insert-comment
-       (list :server-url server-url
-             :id (plist-get comment-json :id)
-             :patch-id id
-             :author (patchwork-cache--person-name
-                      (plist-get comment-json :submitter))
-             :date (plist-get comment-json :date)
-             :content (or (plist-get comment-json :content) ""))))
+      (let ((headers (plist-get comment-json :headers)))
+        (patchwork-db-insert-comment
+         (list :server-url server-url
+               :id (plist-get comment-json :id)
+               :patch-id id
+               :author (patchwork-cache--person-name
+                        (plist-get comment-json :submitter))
+               :date (plist-get comment-json :date)
+               :content (or (plist-get comment-json :content) "")
+               :msgid (plist-get comment-json :msgid)
+               :subject (plist-get comment-json :subject)
+               :submitter-email (plist-get (plist-get comment-json :submitter) :email)
+               :to (patchwork-cache--header-value headers :To)
+               :cc (patchwork-cache--header-value headers :Cc)
+               :references (patchwork-cache--header-value headers :References)
+               :in-reply-to (patchwork-cache--header-value headers :In-Reply-To)))))
     (append patch (list :comments comments) check-counts)))
 
 (defun patchwork-cache--sync-one-series (server series-json)

@@ -42,10 +42,11 @@ The series detail buffer currently lists each patch's comments as a
 flat, chronological list per patch. Instead, render all comments
 across every patch in the series in a threaded fashion (reply
 relationships, not just date order) so a review conversation reads the
-way it would in a mail client or code review tool. Needs figuring out
-how reply/threading info is actually derivable from Patchwork's data
-(In-Reply-To/References headers if exposed via the API, or comment
-ordering/quoting heuristics if not).
+way it would in a mail client or code review tool. Confirmed (while
+implementing comment replies) that comments do carry real In-Reply-To
+and References headers via the API, cached in the `comments' table's
+~in_reply_to_header~/~references_header~ columns -- so threading can
+be built from real header data, not ordering/quoting heuristics.
 
 * TODO Apply a series and start a review
 
@@ -58,14 +59,25 @@ something project-specific). Needs a pluggable
 "start a review for these applied commits" hook rather than hardcoding
 one tool.
 
-* TODO Reply to a comment as a mail message
+* DONE Reply to a comment as a mail message
 
-From a comment shown in a series/patch detail buffer, be able to
-reply to it the same way replying to an email works elsewhere in
-Emacs: spawn a ~message-mode~ buffer pre-filled as if replying to that
-comment's original email (To/Cc/Subject/In-Reply-To/References,
-quoted body), the way Gnus sets up a reply from an inbox message.
-Needs the comment's underlying mail headers/msgid (Patchwork's API
-exposes some of this already for patches/covers; need to confirm
-what's available for individual comments) and probably needs to reuse
-Gnus/message.el's reply-building machinery rather than reinventing it.
+From a comment shown in a series detail buffer, ~r~
+(~patchwork-series-detail-reply-to-comment~) spawns a wide-reply
+~message-mode~ buffer, implemented in the new ~patchwel-mail.el~:
+To is the comment author's email; Cc is the original To/Cc addresses
+minus the new To and minus ~user-mail-address~; Subject gets a "Re: "
+prefix unless already present; In-Reply-To is the comment's Message-ID;
+References is the comment's own References chain plus its Message-ID
+appended. The comment body is quoted one level deeper than it already
+was. Required extending the `comments' table with ~msgid~, ~subject~,
+~submitter_email~, ~to_header~, ~cc_header~, ~references_header~, and
+~in_reply_to_header~ columns (schema version bumped to 3), populated
+from the real Patchwork comment API, which does expose full mail
+headers per comment.
+
+Note: References/In-Reply-To can't just be passed via
+`message-mail's OTHER-HEADERS -- message-setup-1 forcibly regenerates
+both from `message-reply-headers' (unset here, since there's no real
+Gnus reply buffer behind this), silently dropping whatever was
+supplied. Add them afterward with ~message-add-header~ instead, which
+only inserts a header if not already present.

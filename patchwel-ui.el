@@ -8,6 +8,7 @@
 (require 'patchwel-db)
 (require 'patchwel-cache)
 (require 'patchwel-git)
+(require 'patchwel-mail)
 
 (defun patchwork-series--format-date (date)
   "Return the calendar-date portion of DATE, an ISO-8601 timestamp or nil."
@@ -292,6 +293,10 @@ show its full text, in the current detail buffer.  Persists across
   "Return the comment id at point in a detail buffer, or nil."
   (get-text-property (line-beginning-position) 'patchwork-comment-id))
 
+(defun patchwork-series-detail--patch-at-point ()
+  "Return the patch id at point in a detail buffer, or nil."
+  (get-text-property (line-beginning-position) 'patchwork-patch-id))
+
 (defun patchwork-view-series-details (server-url series-id)
   "Show a detail buffer for SERIES-ID on SERVER-URL.
 Displays metadata, tag/check counters, its patches, and each patch's
@@ -334,11 +339,13 @@ a comment line toggles it open to show the full text."
                         (or (plist-get series :check-fail) 0)))
         (insert "\n--- Patches ---\n")
         (dolist (patch patches)
-          (insert (format "%3d. #%-8d [%-16s] %s\n"
-                          (or (plist-get patch :series-position) 0)
-                          (plist-get patch :id)
-                          (or (plist-get patch :state) "")
-                          (or (plist-get patch :name) "")))
+          (insert (propertize
+                   (format "%3d. #%-8d [%-16s] %s\n"
+                           (or (plist-get patch :series-position) 0)
+                           (plist-get patch :id)
+                           (or (plist-get patch :state) "")
+                           (or (plist-get patch :name) ""))
+                   'patchwork-patch-id (plist-get patch :id)))
           (dolist (comment (patchwork-db-get-comments server-url (plist-get patch :id)))
             (let* ((comment-id (plist-get comment :id))
                    (expanded (gethash comment-id patchwork-series-detail--expanded-comments))
@@ -377,10 +384,33 @@ a comment line toggles it open to show the full text."
       (patchwork-view-series-details patchwork-series-detail--server-url
                                       patchwork-series-detail--id))))
 
+(defun patchwork-series-detail-reply-at-point ()
+  "Reply, as a wide-reply mail message, to the comment or patch at point.
+On a comment line, replies to that comment using cached data. On a
+patch line, fetches that patch's full detail live (its mail headers
+aren't part of the cached list-view data) and replies to it."
+  (interactive)
+  (let ((comment-id (patchwork-series-detail--comment-at-point))
+        (patch-id (patchwork-series-detail--patch-at-point)))
+    (cond
+     (comment-id
+      (let ((comment (patchwork-db-get-comment patchwork-series-detail--server-url
+                                                comment-id)))
+        (if comment
+            (patchwork-mail-reply-to-comment comment)
+          (message "No cached comment %s" comment-id))))
+     (patch-id
+      (let ((server (or (patchwork-servers-find patchwork-series-detail--server-url)
+                         (error "Unknown Patchwork server: %s"
+                                patchwork-series-detail--server-url))))
+        (patchwork-mail-reply-to-patch server patch-id)))
+     (t (message "Nothing to reply to on this line")))))
+
 (defvar patchwork-series-detail-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'patchwork-series-detail-toggle-comment)
     (define-key map (kbd "TAB") #'patchwork-series-detail-toggle-comment)
+    (define-key map "r" #'patchwork-series-detail-reply-at-point)
     (define-key map "g" #'patchwork-series-detail-refresh)
     (define-key map "a" #'patchwork-series-detail-apply)
     (define-key map "q" #'quit-window)
