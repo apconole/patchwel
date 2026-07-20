@@ -86,12 +86,17 @@ Returns the path to the downloaded file."
 
 (defun patchwork-apply-patch (server patch-id repo-dir &optional args)
   "Download and apply PATCH-ID from SERVER to the git repository at REPO-DIR.
-ARGS defaults to (\"--3way\" \"--reject\").  Returns non-nil on success."
+ARGS defaults to (\"--reject\"), so a patch that doesn't apply cleanly
+leaves a .rej file to review instead of just failing outright (git
+apply rejects the combination of --reject with --3way, so this can't
+also attempt a 3-way merge; see `patchwork-apply-series-as-commits'
+for a `git am --3way'-based alternative that can).  Returns non-nil on
+success."
   (interactive
    (list (patchwork-git--read-server)
          (read-number "Patch id: ")
          (read-directory-name "Git repository directory: ")))
-  (let* ((args (or args '("--3way" "--reject")))
+  (let* ((args (or args '("--reject")))
          (patch-file (patchwork-git-download-patch server patch-id)))
     (message "Applying patch %s to %s..." patch-id repo-dir)
     (let ((exit-code (apply #'call-process "git" nil nil nil
