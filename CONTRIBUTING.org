@@ -1,0 +1,113 @@
+#+TITLE: Contributing to patchwel
+#+OPTIONS: toc:2 num:nil
+
+* Requirements
+
+- Emacs 29.1 or later, built with SQLite support (~M-x eval-expression
+  RET (fboundp 'sqlite-open) RET~ should show ~t~).
+- ~git~.
+- ~python3~ (stdlib only -- used by the mock Patchwork server in the
+  test suite, nothing else).
+- [[https://tmt.readthedocs.io/][tmt]] (Test Management Tool), only if you want to run the full suite
+  the same way CI does. Install with ~pip install 'tmt[report-junit]'~.
+  Not needed to run individual test files directly (see below).
+
+* Running the tests
+
+** One file at a time (fastest, for iterating)
+
+#+begin_src sh
+tests/run-ert.sh tests/test-cache.el
+#+end_src
+
+This loads ~tests/test-helpers.el~ and the one test file into a fresh
+~emacs -Q --batch~ process and runs its ~ert-deftest~s via
+~ert-run-tests-batch-and-exit~, which exits non-zero if anything
+failed. Substitute any ~tests/test-*.el~ file. There's one per area:
+
+| File                     | Covers                                                      |
+|---------------------------+--------------------------------------------------------------|
+| ~test-db.el~              | SQLite schema, migration, CRUD round-trip                   |
+| ~test-api.el~              | HTTP/JSON layer: pagination, errors, timeouts, Anubis-style challenge handling |
+| ~test-cache.el~            | Sync logic: incremental events, TTL, pruning, since= format cascade |
+| ~test-git-apply.el~        | Working-tree-only apply (~git apply~), reject files, undo   |
+| ~test-git-review.el~       | Apply-as-commits (~git am~), conflict recovery, review backends, branch strategies |
+| ~test-git-prune.el~        | Cached patch mbox pruning                                    |
+| ~test-ui-highlight.el~     | Row highlighting rules, listing filter (pure functions)      |
+| ~test-ui-render.el~        | Buffer rendering, expand/collapse, navigation, check buttons |
+| ~test-mail.el~             | Wide-reply mail composition for comments and patches         |
+
+** The whole suite, via tmt (what CI runs)
+
+#+begin_src sh
+tmt run --all provision --how local --feeling-safe plan --name /plans
+#+end_src
+
+~--feeling-safe~ is required by tmt's ~local~ provisioner (it runs
+tests directly on your machine, no VM/container, so tmt wants you to
+opt in explicitly). To generate the same JUnit report CI does:
+
+#+begin_src sh
+tmt run --last report --how junit --file tmt-results.xml
+#+end_src
+
+* Adding a test
+
+Add a new area by creating both ~tests/test-<name>.el~ (the
+~ert-deftest~s) and ~tests/test-<name>/main.fmf~ (three lines, copy an
+existing one and change the filename/summary/tag) so tmt picks it up
+automatically -- confirm with ~tmt tests ls~.
+
+Reuse what's already in ~tests/test-helpers.el~ rather than rolling
+your own setup:
+
+- ~patchwork-test-with-mock-server~ -- starts (or reuses) the mock
+  Patchwork server (~tests/mock_patchwork_server.py~) and resets it to
+  a known state first, so each ~ert-deftest~ gets fixture-like
+  isolation. Drive scenarios through its ~/_control/*~ endpoints
+  (~patchwork-test-control~, ~patchwork-test-control-log~) rather than
+  adding new server-side logic unless the scenario genuinely needs it.
+- ~patchwork-test-with-temp-db~ -- isolates
+  ~patchwork-db--connection~'s module-global cache in a scratch
+  sqlite file per test. Needed because a plain ~let~ on
+  ~patchwork-local-db-file~ alone doesn't reset that cache.
+- ~patchwork-test-with-temp-repo~ / ~patchwork-test-make-patch-fixture~
+  -- scratch git repositories and real ~git format-patch~-generated
+  mboxes for anything that shells out to git (apply/am/branch
+  strategies). Prefer this over hand-written diff/mbox text -- a
+  hand-rolled diff can silently drift from what git actually produces
+  and stop testing anything real.
+
+* Code conventions
+
+- ~;; SPDX-License-Identifier: GPL-3.0-or-later~ at the top of every
+  ~.el~ file.
+- Docstrings explain *why*, not just what -- especially anything
+  encoding a lesson learned against a real Patchwork server (timezone
+  handling, ~since=~ format quirks, User-Agent/anti-bot behavior).
+  Read a few existing docstrings in ~patchwel-cache.el~/~patchwel-api.el~
+  before adding a new quirk workaround; there's probably a established
+  place for it.
+- Byte-compile before committing:
+  #+begin_src sh
+  emacs -Q --batch -L . --eval \
+    '(dolist (f (quote ("patchwel-config.el" "patchwel-db.el" "patchwel-api.el" "patchwel-cache.el" "patchwel-git.el" "patchwel-mail.el" "patchwel-ui.el" "patchwel.el"))) (byte-compile-file f))'
+  rm -f *.elc
+  #+end_src
+  Clean output, no warnings, is the bar.
+- Update ~README.org~ when adding a user-facing feature or
+  configuration variable, and add a ~DONE~ entry to ~TODO.org~
+  summarizing what changed and how it was verified -- both files are
+  the project's running design/status log, not just onboarding docs.
+- Commits carry ~Signed-off-by:~ (matching your configured git
+  identity) and, if AI-assisted, an ~Assisted-by:~ trailer naming the
+  model. Keep unrelated changes in separate commits.
+
+* Continuous integration
+
+Every push and pull request runs the full tmt suite via GitHub Actions
+(~.github/workflows/test.yml~), against a single pinned Emacs version.
+A failing test fails the check; results are also uploaded as a JUnit
+artifact. There's no separate lint/style CI job today -- the
+byte-compile-cleanly bar above is the closest thing, so please still
+run it locally before opening a PR.

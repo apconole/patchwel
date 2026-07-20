@@ -1,0 +1,3 @@
+test: bash "$TMT_TREE/tests/run-ert.sh" "$TMT_TREE/tests/test-git-review.el"
+summary: Apply-as-commits (git am), conflict recovery, review backends, branch strategies
+tag: [git]

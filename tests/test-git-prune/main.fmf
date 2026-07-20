@@ -1,0 +1,3 @@
+test: bash "$TMT_TREE/tests/run-ert.sh" "$TMT_TREE/tests/test-git-prune.el"
+summary: Cached patch mbox pruning (age-based, force-all, confirmation)
+tag: [git]

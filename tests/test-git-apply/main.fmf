@@ -1,0 +1,3 @@
+test: bash "$TMT_TREE/tests/run-ert.sh" "$TMT_TREE/tests/test-git-apply.el"
+summary: Working-tree-only patch/series apply (git apply), reject files, undo
+tag: [git]

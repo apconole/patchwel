@@ -1,0 +1,25 @@
+name: test
+on: [push, pull_request]
+jobs:
+  tmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: purcell/setup-emacs@master
+        with:
+          version: '29.4'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install 'tmt[report-junit]'
+      - name: Run patchwel test suite
+        run: tmt run --all provision --how local --feeling-safe plan --name /plans
+      - name: Generate JUnit report
+        if: always()
+        run: tmt run --last report --how junit --file tmt-results.xml
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmt-results
+          path: tmt-results.xml

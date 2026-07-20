@@ -1,0 +1,3 @@
+test: bash "$TMT_TREE/tests/run-ert.sh" "$TMT_TREE/tests/test-ui-highlight.el"
+summary: Row highlighting rules and listing filter logic (pure functions)
+tag: [ui]

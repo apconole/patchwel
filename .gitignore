@@ -2,3 +2,5 @@
 *.elc
 *.el~
 *.org~
+__pycache__/
+*.pyc

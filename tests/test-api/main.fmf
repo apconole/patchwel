@@ -1,0 +1,3 @@
+test: bash "$TMT_TREE/tests/run-ert.sh" "$TMT_TREE/tests/test-api.el"
+summary: HTTP/JSON layer - pagination, errors, timeouts, Anubis-style challenge handling
+tag: [api]

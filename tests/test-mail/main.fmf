@@ -1,0 +1,3 @@
+test: bash "$TMT_TREE/tests/run-ert.sh" "$TMT_TREE/tests/test-mail.el"
+summary: Wide-reply mail composition for comments and patches
+tag: [mail]

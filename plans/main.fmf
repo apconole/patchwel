@@ -1,0 +1,5 @@
+summary: Run the full patchwel test suite
+discover:
+    how: fmf
+execute:
+    how: tmt

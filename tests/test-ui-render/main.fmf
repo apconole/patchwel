@@ -1,0 +1,3 @@
+test: bash "$TMT_TREE/tests/run-ert.sh" "$TMT_TREE/tests/test-ui-render.el"
+summary: Listing/detail buffer rendering, expand/collapse, navigation, check buttons
+tag: [ui]

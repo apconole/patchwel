@@ -1,0 +1,3 @@
+test: bash "$TMT_TREE/tests/run-ert.sh" "$TMT_TREE/tests/test-db.el"
+summary: SQLite schema, migration, and CRUD round-trip tests
+tag: [db]

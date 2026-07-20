@@ -6,6 +6,53 @@ Tracks high-level features not yet implemented. Each entry is a goal
 and design notes, not a committed implementation plan — flesh out
 further when work actually starts.
 
+* DONE tmt-based test suite with a mock Patchwork server and CI
+
+74 ~ert-deftest~ tests across 9 areas (~tests/test-db.el~,
+~-api.el~, ~-cache.el~, ~-git-apply.el~, ~-git-review.el~,
+~-git-prune.el~, ~-ui-highlight.el~, ~-ui-render.el~,
+~-mail.el~), run individually via ~tests/run-ert.sh tests/test-X.el~
+or as a whole via ~tmt~ (~tmt run --all provision --how local
+--feeling-safe plan --name /plans~; newer ~tmt~ requires
+~--feeling-safe~ for the ~local~ provisioner), wired into
+~.github/workflows/test.yml~ for CI (installs Emacs via
+~purcell/setup-emacs~, ~pip install 'tmt[report-junit]'~, runs the
+plan, reports JUnit results as an artifact).
+
+~tests/mock_patchwork_server.py~ is a stdlib-only Python
+~ThreadingHTTPServer~ serving Patchwork-shaped JSON fixtures (3
+series/4 patches/comments/checks/events/covers), a real per-patch mbox
+(via ~git format-patch~ against a scratch repo built at startup, not
+hand-written text -- each patch adds its own distinct file so any
+subset/order applies cleanly with no inter-patch dependency), an
+Anubis-style HTML challenge page toggleable per path, and a
+~/_control/*~ mutation API (reset, since= format gating, forced
+per-path HTTP status/delay, patch-state transitions, challenge
+toggling, a request log) that ERT tests drive to exercise scenarios
+against one shared long-lived server process per test file (reset via
+~/_control/reset~ at the top of `patchwork-test-with-mock-server' gives
+each ~ert-deftest~ fixture-like isolation without ERT's native
+support for it). ~tests/test-helpers.el~ also provides
+~patchwork-test-with-temp-db~ (isolates ~patchwork-db--connection~'s
+module-global cache per test) and ~patchwork-test-with-temp-repo~/
+~patchwork-test-make-patch-fixture~ (real scratch git repos and
+~git format-patch~-generated mboxes for the apply/am/branch-strategy
+tests).
+
+Writing this actually caught two real, previously-unexercised bugs in
+shipped code: ~patchwork-apply-patch~'s default args
+(~"--3way" "--reject"~) can't both be passed to ~git apply~ at once
+(fixed to just ~"--reject"~, matching what its reject-file handling
+already assumed); fixture dates hardcoded to a fixed calendar date
+would have silently aged out of the default 30-day sync lookback
+window depending on when the suite runs (fixed to be computed relative
+to "now" at fixture-build time).
+
+Deliberately verified the pass/fail wiring itself, not just that tests
+run: temporarily broke one assertion, confirmed ~tmt run~ exits
+non-zero and reports "N passed and 1 failed" rather than silently
+staying green, then reverted.
+
 * DONE Prune cached patch mbox files
 
 `patchwork-git-download-patch' caches every patch mbox it ever

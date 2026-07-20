@@ -1,0 +1,3 @@
+summary: patchwel ERT test suite
+framework: shell
+duration: 10m
