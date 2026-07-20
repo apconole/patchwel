@@ -163,6 +163,18 @@ server/project pair, each showing title, author, submitted date,
 comment count, Ack/Review/Test/Fixes tag counts, CI check
 Success/Warning/Failure counts, assignee, and state.
 
+patchwel doesn't bind any global key of its own, so entering it is
+just another ~M-x~ away — but if you'd rather have a dedicated chord,
+bind whatever you like to it:
+
+#+begin_src emacs-lisp
+(global-set-key (kbd "C-c p") #'patchwork-show-series)
+#+end_src
+
+With a prefix argument (~C-u C-c p~ here), it shows whatever is
+already cached without syncing first — handy if something else (e.g.
+[[*Background sync via cron][a cron job]]) is already keeping the cache warm.
+
 ** Keybindings — series listing buffer
 
 | Key       | Command                          | Action                                                        |
