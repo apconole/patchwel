@@ -13,7 +13,11 @@ leaving the editor for a browser tab.
 
 patchwel talks to one or more Patchwork servers' REST APIs, caches
 what it fetches in a local SQLite database, and presents it as a
-groupable, filterable listing buffer.
+groupable, filterable listing buffer. Beyond browsing, it covers the
+day-to-day review loop end to end: replying to comments and patches as
+mail, applying a series as real git commits on its own branch and
+opening a browsable log of them (via magit or ~vc~), and tracking a
+patch's CI checks and state through to a final decision.
 
 * License
 
@@ -64,12 +68,49 @@ Each entry is a plist with ~:url~, ~:token~, and ~:projects~:
   read-only access. Required if you want to set delegates/state.
 - ~:projects~ — list of project slugs (or ids) to sync on this server,
   or ~nil~ to sync every project visible to that server/token.
+- ~:since-format~ — optional; forces which ~since=~ timestamp format is
+  sent to this server when doing an incremental sync (a key into
+  ~patchwork-since-format-strings~: ~z~, ~naive~, or ~date~). See
+  below; leave ~nil~ to auto-detect.
+- ~:user-agent~ — optional User-Agent string to send to this server
+  instead of ~patchwork-user-agent~, e.g. if a server admin has
+  exempted a specific string for you. See below; leave ~nil~ for the
+  default.
 
 For any server that hosts many unrelated projects (~patchwork.ozlabs.org~
 and ~patchwork.kernel.org~ both host hundreds), set ~:projects~
 explicitly rather than leaving it ~nil~ — otherwise every sync walks
 the server's entire, mostly-irrelevant event/series history instead of
 just the projects you care about.
+
+** Handling quirky Patchwork deployments
+
+Different real-world Patchwork instances don't all behave alike, so a
+couple of things are auto-detected but can be pinned down explicitly
+per server if you already know what a given deployment needs:
+
+- *~since=~ format*: incremental syncs ask for events/series changed
+  ~since=~ a timestamp, but deployments disagree on the format —
+  ~patchwork.ozlabs.org~ and ~patches.dpdk.org~ both want a
+  Z-suffixed UTC datetime, while ~patchwork.kernel.org~ 500s on any
+  timezone marker at all and wants a naive one. patchwel tries each
+  format in ~patchwork-since-format-strings~ (~z~, then ~naive~, then
+  a bare ~date~) until one works, caching the winner; set a server's
+  ~:since-format~ to skip straight to the one you already know works,
+  avoiding paying for a failed guess on every forced/first sync.
+- *User-Agent*: Emacs's own default User-Agent reads as automated
+  traffic, and at least one Patchwork deployment fronted by an
+  anti-bot system (e.g. Anubis) has been observed serving a
+  JavaScript challenge page instead of a real API response for it.
+  patchwel identifies as ~patchwork-user-agent~ (a plain curl-style
+  string, ~"curl/8.7.1"~ by default — deliberately never a real
+  browser's User-Agent) instead; override per server with
+  ~:user-agent~ if a server admin has exempted a specific string for
+  you. If a response still looks like a non-JSON challenge page,
+  ~patchwork-api-challenge-hook~ is given a chance to supply a
+  substitute response before giving up (see [[*Custom hooks][Custom hooks]] below) —
+  Emacs cannot solve such a challenge itself, but a separate module
+  could plug in here.
 
 ** Other options
 
@@ -78,11 +119,40 @@ just the projects you care about.
 | ~patchwork-local-db-file~        | ~~/.cache/patchwel/patchwork.db~  | Path to the local SQLite cache.                                      |
 | ~patchwork-cache-ttl~            | ~300~ (seconds)                   | How fresh the cache must be before a sync is skipped.                |
 | ~patchwork-sync-lookback-days~   | ~30~                              | History pulled on a server/project's first sync (and on forced/fallback full resyncs). |
-| ~patchwork-sync-timeout~         | ~5~ (seconds)                     | Per-HTTP-request timeout; a slow/unreachable server is skipped rather than blocking the whole sync. |
+| ~patchwork-sync-timeout~         | ~5~ (seconds)                     | Per-HTTP-request timeout for list/summary requests (series/patches/comments/checks/events); a slow/unreachable server is skipped rather than blocking the whole sync. |
+| ~patchwork-detail-fetch-timeout~ | ~15~ (seconds)                    | Per-request timeout for a single patch/series/cover's full detail or mbox — slower/larger than the list requests above, so it gets a longer timeout of its own. |
 | ~patchwork-page-size~            | ~100~                             | Results requested per page from the API.                             |
 | ~patchwork-series-buffer-name~   | ~*patchwork-series*~              | Name of the main listing buffer.                                     |
 | ~patchwork-tag-names~            | ~("ack" "review" "test" "fixes")~ | Trailer tags counted from comment text (Acked-by/Reviewed-by/Tested-by/Fixes). |
 | ~patchwork-default-state-filter~ | ~("new" "assigned" "under-review")~ | States shown in the listing buffer until you change the filter at runtime. Set to ~nil~ to show every state. Patchwork's actual state names vary by deployment, so adjust this to match yours. |
+
+** Highlighting
+
+The listing buffer highlights a whole series row using
+~patchwork-series-highlight-rules~, a list of functions each called
+with a series plist, returning a face or ~nil~; the first to return
+non-nil wins. Built in, in order:
+
+| Rule                          | Face                          | Condition                                                    |
+|--------------------------------+--------------------------------+----------------------------------------------------------------|
+| ~patchwork-series--rule-mine~  | ~patchwork-series-mine-face~  | Assigned to one of ~patchwork-my-identities~ (a list of usernames/emails considered "you", matched case-insensitively as a substring). |
+| ~patchwork-series--rule-stale~ | ~patchwork-series-stale-face~ | Older than ~patchwork-series-stale-days~ (default 14) *and* has no comments yet. |
+| ~patchwork-series--rule-old~   | ~patchwork-series-old-face~   | Older than ~patchwork-series-old-days~ (default 30), regardless of comments. |
+
+Add your own rule by pushing a function onto (the front of)
+~patchwork-series-highlight-rules~ — anything that takes a series
+plist and returns a face symbol or ~nil~ works, e.g. one that checks
+~(plist-get series :state)~. The title and submitted-date columns
+also each get their own face (~patchwork-series-title-face~/
+~patchwork-series-date-face~) independent of the row-highlight rules.
+
+In a series detail buffer: a patch's summary line uses
+~patchwork-patch-line-face~ to stand out from its comments; an
+expanded comment's quoted lines (~>~-prefixed, any nesting depth) use
+~patchwork-comment-quote-face~ and its actual reply text uses
+~patchwork-comment-reply-face~; a CI check's line uses
+~patchwork-check-success-face~/~-warning-face~/~-fail-face~ depending
+on its state.
 
 * Usage
 
@@ -100,7 +170,11 @@ Success/Warning/Failure counts, assignee, and state.
 | ~RET~     | ~patchwork-series-dwim~          | On a group header: toggle it. On a series row: open its detail buffer. |
 | ~TAB~     | ~patchwork-series-dwim~          | Same as ~RET~.                                                |
 | ~g~       | ~patchwork-series-refresh~       | Re-sync. With a prefix argument (~C-u g~), force a full resync (bypassing both the TTL and incremental/events-based sync) rather than the usual incremental sync. |
-| ~a~       | ~patchwork-series-apply-at-point~ | Apply every patch in the series at point to a git repository you choose. |
+| ~G~       | ~patchwork-fetch-series~         | Fetch and cache one specific series by server + id directly, regardless of ~patchwork-sync-lookback-days~, then open its detail buffer. |
+| ~a~       | ~patchwork-series-apply-at-point~ | Apply every patch in the series at point to a git repository, working-tree only (~git apply~, no commits). |
+| ~R~       | ~patchwork-series-review-at-point~ | Apply the series at point as real commits and open a browsable view of them — see [[*Applying a series and starting a review][Applying a series and starting a review]]. |
+| ~n~/~p~   | ~patchwork-series-next~/~-prev~  | Move to the next/previous series row.                         |
+| ~N~/~P~   | ~patchwork-series-next-server~/~-prev-server~ | Move to the next/previous server, skipping over any remaining project groups under the current one. |
 | ~f~       | ~patchwork-series-set-filter~    | Interactively edit the state/server/project/author filter, prefilled with the current values. |
 | ~F~       | ~patchwork-series-reset-filter~  | Reset the filter back to ~patchwork-default-state-filter~.    |
 | ~+~       | ~patchwork-series-expand-all~    | Expand every group.                                           |
@@ -109,11 +183,27 @@ Success/Warning/Failure counts, assignee, and state.
 
 ** Keybindings — series detail buffer
 
-| Key | Command                          | Action                                                    |
-|-----+-----------------------------------+--------------------------------------------------------------|
-| ~g~ | ~patchwork-series-detail-refresh~ | Redraw this series' detail (title, author, tags, checks, patches, comments). |
-| ~a~ | ~patchwork-series-detail-apply~  | Apply every patch in this series to a git repository you choose. |
-| ~q~ | ~quit-window~                    | Close the buffer.                                         |
+A series detail buffer lists its title/author/tags/check counts, then
+each patch (its commit message and diff, collapsed by default) and
+each patch's comments and CI checks.
+
+| Key     | Command                              | Action                                                    |
+|---------+---------------------------------------+--------------------------------------------------------------|
+| ~RET~   | ~patchwork-series-detail-toggle-at-point~ | Expand/collapse the patch or comment at point.       |
+| ~TAB~   | ~patchwork-series-detail-toggle-at-point~ | Same as ~RET~.                                       |
+| ~r~     | ~patchwork-series-detail-reply-at-point~ | Reply, as mail, to the comment or patch at point — see [[*Replying to comments and patches][Replying to comments and patches]]. |
+| ~g~     | ~patchwork-series-detail-refresh~    | Redraw this series' detail (title, author, tags, checks, patches, comments). |
+| ~a~     | ~patchwork-series-detail-apply~      | Apply every patch in this series, working-tree only (~git apply~, no commits). |
+| ~R~     | ~patchwork-series-detail-review~     | Apply this series as real commits and open a browsable view of them. |
+| ~n~/~p~ | ~patchwork-series-detail-next-patch~/~-prev-patch~ | Move to the next/previous patch's summary line, regardless of expand state. |
+| ~N~/~P~ | ~patchwork-series-detail-next-comment~/~-prev-comment~ | Move to the next/previous comment's summary line. |
+| ~+~     | ~patchwork-series-detail-expand-all~ | Expand every patch and comment in this buffer.            |
+| ~-~     | ~patchwork-series-detail-collapse-all~ | Collapse every patch and comment in this buffer.        |
+| ~q~     | ~quit-window~                        | Close the buffer.                                         |
+
+A CI check's ~target_url~, when it has one, is rendered as a clickable
+button (RET/mouse-2) that opens it with ~browse-url~ rather than as
+plain text.
 
 Note: delegating a patch and changing its state are supported at the
 API layer (~patchwork-api-set-delegate~, ~patchwork-api-set-state~ in
@@ -121,15 +211,168 @@ API layer (~patchwork-api-set-delegate~, ~patchwork-api-set-state~ in
 or keybinding — that's on the roadmap, not something you can drive
 from the listing buffer today.
 
-** Applying patches to a git tree
+** Fetching a specific series by id
 
-Beyond the ~a~ keybindings above, the following are available as
-~M-x~ commands (each downloads the patch's mbox from Patchwork on
-demand rather than requiring it to already be cached locally):
+~G~ (~patchwork-fetch-series~) prompts for a server and a series id,
+then fetches and caches just that series — its patches, comments, and
+checks — regardless of ~patchwork-sync-lookback-days~ or which project
+it belongs to, and opens its detail buffer. Useful for a series you
+already know the id of (e.g. found by browsing the Patchwork web UI
+directly) that's too old, or otherwise outside the range, for a
+routine sync to ever reach on its own.
 
-- ~patchwork-apply-patch~ — apply a single patch.
-- ~patchwork-apply-series~ — apply every patch in a series, in order.
+** Replying to comments and patches
+
+~r~ in a series detail buffer (~patchwork-series-detail-reply-at-point~)
+composes a wide-reply ~message-mode~ buffer for whatever is at point:
+
+- *On a comment*: To is the comment author's email; Cc is the
+  original To/Cc addresses minus the new To and minus
+  ~user-mail-address~; Subject gets a "Re: " prefix unless already
+  present; In-Reply-To is the comment's Message-ID; References is the
+  comment's own References chain plus its Message-ID appended. The
+  comment's body is quoted one level deeper than it already was.
+- *On a patch*: same wide-reply treatment, replying to the patch
+  submission itself (its mail headers are fetched live if not already
+  cached, since the listing/sync's list view doesn't carry them).
+
+This assumes ~message-mode~ is already configured to send mail the way
+you normally would from Emacs (e.g. ~smtpmail~ or similar) — patchwel
+just composes the buffer. If you don't already have that set up, see
+the [[https://www.gnus.org/manual.html][Gnus manual]] (~message-mode~ itself is documented there, under
+"Message"), or this quick-start [[https://github.com/redguardtoo/mastering-emacs-in-one-year-guide/blob/master/gnus-guide-en.org][Gnus setup guide]] — or
+[[*Appendix: a minimal mail-sending setup][the appendix]] below for a minimal example that gets a Gmail account
+able to send via ~smtpmail~ and ~~/.authinfo.gpg~.
+
+** Applying a series and starting a review
+
+Beyond the ~a~/~R~ keybindings above, applying is also available as
+~M-x~ commands (each downloads a patch's mbox from Patchwork on demand
+rather than requiring it to already be cached locally):
+
+- ~patchwork-apply-patch~ — apply a single patch to a git repository's
+  working tree (~git apply~; no commit is created).
+- ~patchwork-apply-series~ — apply every patch in a series this way,
+  in order.
 - ~patchwork-undo-patch~ — reverse-apply a previously-applied patch.
+- ~patchwork-apply-series-as-commits~ — apply every patch in a series
+  via a single ~git am --3way~ call instead, so each patch becomes its
+  own real commit with its original author, date, and commit message
+  preserved from the mail (~--3way~ means a failing patch falls back
+  to a real merge with conflict markers, rather than simply refusing
+  to apply). Returns the before/after HEAD commit hashes, which is
+  what lets the result be browsed afterwards.
+- ~patchwork-review-series~ (~R~) — ties the above together: applies a
+  series as commits, then opens a browsable view of them via
+  ~patchwork-review-backends~ (see [[*Custom hooks][Custom hooks]]) — magit's log buffer
+  over the applied range if magit is loaded, otherwise a ~log-view-mode~
+  buffer via Emacs's built-in ~vc~. Both give the usual
+  n/p-between-commits, RET-to-view-diff navigation their mode already
+  provides.
+
+*** Choosing a git tree per project
+
+~patchwork-project-git-trees~ is an alist mapping
+~(SERVER-URL . PROJECT-SLUG)~ to a git repository directory, since
+different projects usually need different trees. It's populated on
+demand: the first time you apply a series for a given project, you're
+prompted for a directory and offered to save it here for next time;
+edit the variable directly (or via ~M-x customize-variable~) to fix a
+wrong path or set one up ahead of time.
+
+*** Applying to a dedicated branch
+
+By default a series is applied to whatever is currently checked out.
+To instead have it create and check out its own branch every time,
+configure ~patchwork-project-branch-strategies~ (same
+~(SERVER-URL . PROJECT-SLUG)~ alist shape, falling back to
+~patchwork-default-branch-strategy~ if a project has no entry) with a
+string of the form ~"BASE:TARGET-TEMPLATE"~:
+
+#+begin_src emacs-lisp
+(setq patchwork-project-branch-strategies
+      '((("https://patchwork.ozlabs.org/api" . "openvswitch")
+         . "upstream/main:review_%i")))
+#+end_src
+
+This means: every time a series from that project is applied, create
+and check out a new branch named by substituting the series id for
+~%i~ (~review_514346~ for series 514346), based on the tip of
+~upstream/main~. Applying errors out rather than reusing or resetting
+an already-existing target branch, so applying the same series twice
+under a strategy is a mistake that surfaces instead of silently
+overwriting whatever was already there.
+
+*** When ~git am~ fails
+
+If ~git am --3way~ stops (a conflict, or anything else), the
+repository is left mid-~am~ and a ~*patchwork-am: <repo>*~ buffer opens
+automatically showing its output, the patch email it stopped on, and
+each conflicted file as a button (RET/mouse-2) to open directly — no
+need to drop to a shell to see what happened. From there:
+
+- ~M-x patchwork-git-am-status~ — show the same view again on demand
+  (e.g. coming back to it later, from a fresh Emacs session).
+- ~M-x patchwork-git-am-continue~ — after resolving conflicts by hand,
+  continue.
+- ~M-x patchwork-git-am-skip~ — skip the current patch.
+- ~M-x patchwork-git-am-abort~ — give up and restore the original branch.
+
+Each prompts for the repository directory and refreshes the status
+buffer with the result.
+
+** Pruning cached patch files
+
+Every patch mbox ~patchwork-git-download-patch~ downloads (for either
+kind of apply, or a review) is cached in ~patchwork-git-temp-dir~
+(~~/.cache/patchwel/patchwork-patches~) — nothing deletes them on its
+own, so the directory only grows. Two ways to reclaim that space:
+
+- ~M-x patchwork-git-prune-patches~ — deletes cached files older than
+  ~patchwork-patch-cache-max-age-days~ (default 30). With a prefix
+  argument (~C-u M-x patchwork-git-prune-patches~), deletes every
+  cached file regardless of age. Prompts for confirmation, then
+  reports how many files and how much disk space were freed.
+- Automatically, during sync: ~patchwork-prune-on-terminal-states~ (a
+  list of state strings — ~accepted~, ~rejected~, ~deferred~,
+  ~changes-requested~, ~superseded~, ~not-applicable~ by default,
+  since real state names vary by deployment; set to ~nil~ to disable)
+  drives pruning a patch's cached mbox the moment a sync observes it
+  transition from some other state into one of these — review/apply
+  work is presumably done by then. Re-syncing a patch already in a
+  terminal state is a no-op, not a repeated deletion attempt.
+
+* Custom hooks
+
+Two extension points let you plug in your own behavior without
+modifying patchwel itself:
+
+- ~patchwork-api-challenge-hook~ — run when a Patchwork server's
+  response looks like an anti-bot challenge page rather than the
+  expected JSON (see [[*Handling quirky Patchwork deployments][Handling quirky Patchwork deployments]]). Each function
+  is called, via ~run-hook-with-args-until-success~, with
+  ~(SERVER URL BUFFER)~, where BUFFER holds the complete raw HTTP
+  response that looked like a challenge; the first function to return
+  a substitute buffer (same raw "status line, headers, blank line,
+  body" shape) wins, and it's processed instead. A function that
+  can't handle a given response should return ~nil~. Empty by
+  default — Emacs cannot solve such a challenge on its own, so this
+  exists purely so a dedicated module could plug in later (e.g. one
+  that solves an Anubis proof-of-work challenge and re-issues the
+  request).
+- ~patchwork-review-backends~ — tried, in order, to open a browsable
+  view of a series' just-applied commits after ~patchwork-review-series~
+  (see [[*Applying a series and starting a review][Applying a series and starting a review]]). Each function is called,
+  via ~run-hook-with-args-until-success~, with
+  ~(REPO-DIR BEFORE-REV AFTER-REV)~ and should return non-nil if it
+  opened a view, or ~nil~ to let the next backend try. Defaults to
+  ~(patchwork-review-backend-magit patchwork-review-backend-vc)~; add
+  your own function to the front of the list to prefer a different
+  review tool (e.g. ~code-review.el~, ~forge~). ~git-timemachine~
+  doesn't fit this hook, since it walks one file's revision history
+  rather than a range of commits across a whole tree — but it still
+  works as normal on any file touched by a just-applied series
+  (~M-x git-timemachine~ in that file's buffer).
 
 * Background sync via cron
 
@@ -168,3 +411,57 @@ Notes on how this interacts with an interactive session:
   cache changed underneath it — you still need ~g~ to re-query and
   redraw, but that ~g~ will be fast, since the network work was
   already done by cron.
+
+* Appendix: a minimal mail-sending setup
+
+This isn't part of patchwel — it's a minimal, self-contained example
+of getting ~message-mode~ able to actually send mail via SMTP, which is
+what ~patchwork-mail-reply-to-comment~/~-to-patch~ compose into. Skip
+this if you already send mail from Emacs. For real documentation
+rather than this cut-down example, see the [[https://www.gnus.org/manual.html][Gnus manual]] or this
+[[https://github.com/redguardtoo/mastering-emacs-in-one-year-guide/blob/master/gnus-guide-en.org][quick-start Gnus setup guide]].
+
+** ~~/.authinfo.gpg~
+
+Store SMTP credentials encrypted rather than in plain text in
+~init.el~ — Emacs's ~auth-source~ reads this file (via GPG) when
+~smtpmail~ needs a password:
+
+#+begin_src text
+machine smtp.gmail.com login you@gmail.com password APP-PASSWORD port 587
+#+end_src
+
+For Gmail specifically, ~APP-PASSWORD~ needs to be an App Password
+(Google Account → Security → 2-Step Verification → App passwords),
+not your regular account password, if 2-Step Verification is enabled
+(as it is by default for most accounts) — Google's SMTP no longer
+accepts plain account passwords for third-party clients otherwise.
+
+Encrypt the file once with:
+
+#+begin_src sh
+gpg --encrypt --recipient you@example.com ~/.authinfo   # writes ~/.authinfo.gpg
+rm ~/.authinfo                                            # remove the plaintext original
+#+end_src
+
+Emacs (via ~epa-file~, loaded by default) will prompt for your GPG
+passphrase the first time something reads the file in a session (or
+use ~gpg-agent~ to cache it).
+
+** Minimal ~init.el~ snippet
+
+#+begin_src emacs-lisp
+(setq user-mail-address "you@gmail.com"
+      user-full-name "Your Name")
+
+(setq send-mail-function #'smtpmail-send-it
+      message-send-mail-function #'smtpmail-send-it
+      smtpmail-smtp-server "smtp.gmail.com"
+      smtpmail-smtp-service 587
+      smtpmail-stream-type 'starttls
+      smtpmail-smtp-user "you@gmail.com")
+#+end_src
+
+With this in place, any ~message-mode~ buffer — including the ones
+~patchwork-mail-reply-to-comment~/~-to-patch~ compose — sends with
+~C-c C-c~.
