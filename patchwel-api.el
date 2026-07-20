@@ -193,7 +193,8 @@ used to download a patch's full mbox."
    server "/series/" 'get
    (append (when project `(("project" . ,project)))
            `(("per_page" . ,patchwork-page-size))
-           params)))
+           params)
+   (patchwork-server-sync-timeout server)))
 
 (defun patchwork-api-get-series (server series-id)
   "Get detailed information for SERIES-ID on SERVER."
@@ -213,7 +214,8 @@ references) naming which series it belongs to."
    server "/patches/" 'get
    (append (when project `(("project" . ,project)))
            `(("per_page" . ,patchwork-page-size))
-           params)))
+           params)
+   (patchwork-server-sync-timeout server)))
 
 (defun patchwork-api-get-patch (server patch-id)
   "Get detailed information for PATCH-ID on SERVER."
@@ -222,11 +224,13 @@ references) naming which series it belongs to."
 
 (defun patchwork-api-list-comments (server patch-id)
   "List comments for PATCH-ID on SERVER."
-  (patchwork-api-request server (format "/patches/%s/comments/" patch-id) 'get))
+  (patchwork-api-request server (format "/patches/%s/comments/" patch-id) 'get nil
+                          (patchwork-server-sync-timeout server)))
 
 (defun patchwork-api-list-checks (server patch-id)
   "List CI checks for PATCH-ID on SERVER."
-  (patchwork-api-request server (format "/patches/%s/checks/" patch-id) 'get))
+  (patchwork-api-request server (format "/patches/%s/checks/" patch-id) 'get nil
+                          (patchwork-server-sync-timeout server)))
 
 (defun patchwork-api-list-events (server &optional project since params)
   "List events on SERVER, optionally scoped to PROJECT.
@@ -239,7 +243,8 @@ fall back gracefully should catch that with `condition-case'."
    (append (when project `(("project" . ,project)))
            (when since `(("since" . ,since)))
            `(("per_page" . ,patchwork-page-size))
-           params)))
+           params)
+   (patchwork-server-sync-timeout server)))
 
 (defun patchwork-api-set-delegate (server patch-id delegate)
   "Set the assignee/DELEGATE for PATCH-ID on SERVER."

@@ -33,7 +33,18 @@ Each entry is a plist with:
   :user-agent    Optional User-Agent string to send to this server instead
                  of `patchwork-user-agent'.  Useful if a server admin has
                  exempted a specific string from anti-bot protection for
-                 you.  Leave nil to use the default."
+                 you.  Leave nil to use the default.
+  :sync-timeout  Optional; seconds to wait for a single list/summary
+                 request (series/patches/comments/checks/events) to this
+                 server instead of `patchwork-sync-timeout'.  Some
+                 deployments' `events=' queries are genuinely slow on a
+                 busy project rather than just occasionally slow -- a
+                 timeout there is NOT treated as \"no events API\" (only
+                 a 404 is), so it just fails that sync cycle outright and
+                 retries the same cutoff next time, indefinitely, until
+                 it stops timing out.  Raise this for a server/project
+                 combination that's consistently slow rather than
+                 transiently so.  Leave nil to use the default."
   :type '(repeat
           (list :tag "Server"
                 (const :format "" :url)
@@ -49,7 +60,9 @@ Each entry is a plist with:
                         (const :tag "Naive datetime, no timezone" naive)
                         (const :tag "Date only" date))
                 (const :format "" :user-agent)
-                (choice :tag "User-Agent" (const :tag "Default" nil) string)))
+                (choice :tag "User-Agent" (const :tag "Default" nil) string)
+                (const :format "" :sync-timeout)
+                (choice :tag "Sync timeout (seconds)" (const :tag "Default" nil) integer)))
   :group 'patchwork)
 
 (defcustom patchwork-user-agent "curl/8.7.1"
@@ -311,6 +324,11 @@ A single nil entry means \"sync every project\"."
   "Return the User-Agent string to send to SERVER: its own :user-agent
 override if set, otherwise `patchwork-user-agent'."
   (or (plist-get server :user-agent) patchwork-user-agent))
+
+(defun patchwork-server-sync-timeout (server)
+  "Return the list/summary request timeout for SERVER: its own
+:sync-timeout override if set, otherwise `patchwork-sync-timeout'."
+  (or (plist-get server :sync-timeout) patchwork-sync-timeout))
 
 (provide 'patchwel-config)
 

@@ -34,6 +34,19 @@
       (should-error (patchwork-api-list-series server)
                     :type 'patchwork-api-timeout-error))))
 
+(ert-deftest patchwork-api-test-per-server-sync-timeout-override ()
+  ;; A server whose events endpoint is consistently slower than the
+  ;; global default needs a longer timeout of its own, without raising
+  ;; it for every other server -- :sync-timeout is exactly that override.
+  (patchwork-test-with-mock-server port
+    (patchwork-test-control port "set-delay" '((path . "/api/events/") (seconds . 2)))
+    (let ((patchwork-sync-timeout 1))
+      (let ((default-server (patchwork-test-server-plist port)))
+        (should-error (patchwork-api-list-events default-server "proj" nil)
+                      :type 'patchwork-api-timeout-error))
+      (let ((overridden-server (patchwork-test-server-plist port :sync-timeout 5)))
+        (should (patchwork-api-list-events overridden-server "proj" nil))))))
+
 (ert-deftest patchwork-api-test-challenge-no-hook ()
   (patchwork-test-with-mock-server port
     (patchwork-test-control port "set-challenge" '((path . "/api/series/") (on . t)))

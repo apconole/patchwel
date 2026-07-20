@@ -76,6 +76,10 @@ Each entry is a plist with ~:url~, ~:token~, and ~:projects~:
   instead of ~patchwork-user-agent~, e.g. if a server admin has
   exempted a specific string for you. See below; leave ~nil~ for the
   default.
+- ~:sync-timeout~ — optional; seconds to wait for a single list/summary
+  request (series/patches/comments/checks/events) to this server
+  instead of ~patchwork-sync-timeout~. See below; leave ~nil~ for the
+  default.
 
 For any server that hosts many unrelated projects (~patchwork.ozlabs.org~
 and ~patchwork.kernel.org~ both host hundreds), set ~:projects~
@@ -111,6 +115,17 @@ per server if you already know what a given deployment needs:
   substitute response before giving up (see [[*Custom hooks][Custom hooks]] below) —
   Emacs cannot solve such a challenge itself, but a separate module
   could plug in here.
+- *Slow endpoints on a busy project*: an incremental sync's ~/events/~
+  query can be genuinely slower than ~patchwork-sync-timeout~'s
+  default (~5~ seconds) on a high-traffic project, rather than just
+  occasionally slow — and a timeout there is *not* treated as "this
+  server has no events API" (only a real 404 is), so it just fails
+  that sync cycle outright and retries the exact same cutoff next
+  time, indefinitely, until it stops timing out. If ~*Messages*~ keeps
+  showing "Patchwork: failed to sync ...: Patchwork API request timed
+  out" for one server/project and a forced resync (~C-u g~) doesn't
+  help either, raise that server's ~:sync-timeout~ rather than the
+  global default.
 
 ** Other options
 
