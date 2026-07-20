@@ -12,8 +12,21 @@ jobs:
         with:
           python-version: '3.x'
       - run: pip install 'tmt[report-junit]'
+      - name: Resolve absolute tool paths
+        # tmt's local provisioner doesn't reliably inherit this job's
+        # $GITHUB_PATH-modified PATH (e.g. purcell/setup-emacs installs to
+        # a hosted-toolcache directory), so pass absolute paths in
+        # explicitly via `tmt run -e` rather than relying on ambient PATH.
+        run: |
+          echo "EMACS_BIN=$(command -v emacs)" >> "$GITHUB_ENV"
+          echo "GIT_BIN=$(command -v git)" >> "$GITHUB_ENV"
+          echo "PYTHON_BIN=$(command -v python3)" >> "$GITHUB_ENV"
       - name: Run patchwel test suite
-        run: tmt run --all provision --how local --feeling-safe plan --name /plans
+        run: |
+          tmt run --all --verbose \
+            -e EMACS="$EMACS_BIN" -e GIT="$GIT_BIN" -e PYTHON3="$PYTHON_BIN" \
+            provision --how local --feeling-safe \
+            plan --name /plans
       - name: Generate JUnit report
         if: always()
         run: tmt run --last report --how junit --file tmt-results.xml
