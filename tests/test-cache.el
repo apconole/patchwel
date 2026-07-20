@@ -83,6 +83,37 @@
           (time-subtract (current-time) (days-to-time 30)))
          :type 'patchwork-api-http-error)))))
 
+(ert-deftest patchwork-cache-test-events-with-project-502s-without-the-workaround ()
+  ;; Reproduces the real patchwork.kernel.org bug: project= present on
+  ;; /events/ 502s, unrelated to since= format or load.
+  (patchwork-test-with-mock-server port
+    (patchwork-test-control port "set-reject-events-with-project" '((on . t)))
+    (let ((plain-server (patchwork-test-server-plist port)))
+      (should-error
+       (patchwork-cache--sync-incremental
+        plain-server "testproj" "2020-01-01T00:00:00Z"
+        (time-subtract (current-time) (days-to-time 30)))
+       :type 'patchwork-api-http-error))))
+
+(ert-deftest patchwork-cache-test-events-omit-project-avoids-502-and-filters-locally ()
+  (patchwork-test-with-mock-server port
+    (patchwork-test-control port "set-reject-events-with-project" '((on . t)))
+    (patchwork-test-with-temp-db
+      (let ((server (patchwork-test-server-plist port :events-omit-project t)))
+        ;; no error this time -- project= was never sent
+        (patchwork-cache--sync-incremental
+         server "testproj" "2020-01-01T00:00:00Z"
+         (time-subtract (current-time) (days-to-time 30)))
+        ;; testproj's series (reached via a direct series-created event, a
+        ;; patch-created event needing a get-patch lookup, and a
+        ;; cover-created event needing a get-cover lookup) were synced
+        (should (patchwork-db-get-series (plist-get server :url) 1001))
+        (should (patchwork-db-get-series (plist-get server :url) 1002))
+        ;; the other project's series, whose event came back in the same
+        ;; (unfiltered, server-wide) response, was correctly excluded by
+        ;; the client-side :project match rather than being synced too
+        (should-not (patchwork-db-get-series (plist-get server :url) 1004))))))
+
 ;; -- full sync / cache-sync integration --------------------------------------
 
 (defmacro patchwork-cache-test--with-synced-mock (server-var &rest body)
@@ -101,7 +132,7 @@ that one server, and a scratch `patchwork-git-temp-dir', run BODY."
 (ert-deftest patchwork-cache-test-full-sync-populates-every-table ()
   (patchwork-cache-test--with-synced-mock server
     (patchwork-cache-sync)
-    (should (= (length (patchwork-db-query-series)) 3))
+    (should (= (length (patchwork-db-query-series)) 4))
     (let ((s1002 (patchwork-db-get-series (plist-get server :url) 1002)))
       (should (equal (plist-get s1002 :state) "under-review")))
     (should (= (length (patchwork-db-get-series-patches (plist-get server :url) 1002)) 2))

@@ -44,7 +44,25 @@ Each entry is a plist with:
                  retries the same cutoff next time, indefinitely, until
                  it stops timing out.  Raise this for a server/project
                  combination that's consistently slow rather than
-                 transiently so.  Leave nil to use the default."
+                 transiently so.  Leave nil to use the default.
+  :events-omit-project
+                 Optional boolean; when non-nil, `since='-based
+                 incremental syncs never send `project=' on the
+                 `/events/' request for this server at all -- every
+                 project's events are fetched together and dispatched
+                 to the right one locally, using each event's own
+                 :project field (already present in real Patchwork
+                 event payloads), no extra requests needed.  Some
+                 deployments (patchwork.kernel.org, observed on the
+                 netdevbpf project) 502 specifically when `project=' is
+                 present on this endpoint, seemingly unrelated to load
+                 or `since=' format.  Leave nil (the default) unless
+                 you've actually hit this -- on a server hosting many
+                 unrelated projects, enabling it means every one of
+                 that server's incremental syncs fetches the *entire*
+                 server's event history instead of just the project(s)
+                 you configured, which is exactly what setting
+                 `:projects' is meant to avoid paying for."
   :type '(repeat
           (list :tag "Server"
                 (const :format "" :url)
@@ -62,7 +80,9 @@ Each entry is a plist with:
                 (const :format "" :user-agent)
                 (choice :tag "User-Agent" (const :tag "Default" nil) string)
                 (const :format "" :sync-timeout)
-                (choice :tag "Sync timeout (seconds)" (const :tag "Default" nil) integer)))
+                (choice :tag "Sync timeout (seconds)" (const :tag "Default" nil) integer)
+                (const :format "" :events-omit-project)
+                (boolean :tag "Omit project= from /events/ requests")))
   :group 'patchwork)
 
 (defcustom patchwork-user-agent "curl/8.7.1"
@@ -329,6 +349,12 @@ override if set, otherwise `patchwork-user-agent'."
   "Return the list/summary request timeout for SERVER: its own
 :sync-timeout override if set, otherwise `patchwork-sync-timeout'."
   (or (plist-get server :sync-timeout) patchwork-sync-timeout))
+
+(defun patchwork-server-events-omit-project-p (server)
+  "Return non-nil if SERVER's :events-omit-project is set, meaning
+incremental syncs should never send `project=' on `/events/' requests
+to it (see `patchwork-servers')."
+  (plist-get server :events-omit-project))
 
 (provide 'patchwel-config)
 

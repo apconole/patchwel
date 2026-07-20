@@ -368,6 +368,14 @@ Patchwork event payloads (patchwork.ozlabs.org, patches.dpdk.org):
               (push (plist-get s :id) ids)))))))
     (delete-dups ids)))
 
+(defun patchwork-cache--event-matches-project-p (event project)
+  "Return non-nil if EVENT belongs to PROJECT (a project slug/link_name),
+using EVENT's own top-level :project field -- present in real
+Patchwork event payloads independently of any `project=' the request
+was scoped by.  PROJECT nil (\"every project\") always matches."
+  (or (null project)
+      (equal (plist-get (plist-get event :project) :link_name) project)))
+
 (defun patchwork-cache--sync-incremental (server project since cutoff-time)
   "Sync PROJECT on SERVER using events since SINCE (a full-precision
 ISO-8601 string, as stored in `sync_meta').  The actual `since=' value
@@ -377,6 +385,18 @@ client-side `patchwork-cache--after-cutoff-p' re-check against SINCE's
 real precision is kept regardless, so a coarser request doesn't cause
 already-processed events to be reprocessed.  Only series touched by
 the surviving events are re-fetched.
+
+If SERVER has :events-omit-project set (see `patchwork-servers'), the
+`/events/' request never sends `project=' at all -- every project's
+events on SERVER come back together, and PROJECT is instead applied as
+a client-side filter via `patchwork-cache--event-matches-project-p'
+(using each event's own :project field, no extra requests needed).
+Some deployments 502 on this endpoint specifically when `project=' is
+present; this sidesteps that.  Leave the flag unset (the default) on a
+server hosting many unrelated projects, since PROJECT is normally sent
+server-side precisely to avoid fetching everyone else's event history
+too.
+
 Falls back to a full `patchwork-cache--sync-window' (bounded by
 CUTOFF-TIME) only when SERVER genuinely has no events API, signaled by
 the endpoint itself returning HTTP 404.  Any other failure (timeout,
@@ -387,13 +407,17 @@ that would just pile more requests onto an already-struggling network
 or server."
   (condition-case err
       (let* ((since-time (date-to-time since))
+             (omit-project (patchwork-server-events-omit-project-p server))
+             (query-project (unless omit-project project))
              (events (seq-filter
                       (lambda (event)
-                        (patchwork-cache--after-cutoff-p (plist-get event :date) since-time))
+                        (and (patchwork-cache--after-cutoff-p (plist-get event :date) since-time)
+                             (or (not omit-project)
+                                 (patchwork-cache--event-matches-project-p event project))))
                       (patchwork-cache--fetch-with-since
                        server since-time
                        (lambda (since-str)
-                         (patchwork-api-list-events server project since-str))))))
+                         (patchwork-api-list-events server query-project since-str))))))
         (dolist (series-id (patchwork-cache--event-series-ids server events))
           (let ((series-json (ignore-errors (patchwork-api-get-series server series-id))))
             (when series-json

@@ -91,6 +91,8 @@ def build_mboxes(patch_ids):
 def make_fixtures():
     project = {"id": 1, "url": "/api/projects/1/", "name": "Test Project",
                "link_name": "testproj"}
+    project2 = {"id": 2, "url": "/api/projects/2/", "name": "Other Project",
+                "link_name": "otherproj"}
 
     def person(name, email):
         return {"id": abs(hash(email)) % 100000, "name": name, "email": email}
@@ -99,12 +101,12 @@ def make_fixtures():
     bob = person("Bob Reviewer", "bob@example.com")
 
     def patch(pid, series_id, name, state, position, check="pending",
-              delegate=None):
+              delegate=None, project_obj=None):
         return {
             "id": pid,
             "url": f"/api/patches/{pid}/",
             "web_url": f"/patch/{pid}/",
-            "project": project,
+            "project": project_obj or project,
             "msgid": f"<patch-{pid}@example.com>",
             "date": recent(6 - position),
             "name": name,
@@ -133,6 +135,8 @@ def make_fixtures():
         2002: patch(2002, 1002, "[PATCH 1/2] first of two", "new", 1),
         2003: patch(2003, 1002, "[PATCH 2/2] second of two", "under-review", 2),
         2004: patch(2004, 1003, "[PATCH] an untouched-by-events series", "new", 1),
+        2005: patch(2005, 1004, "[PATCH] a series in the other project", "new", 1,
+                    project_obj=project2),
     }
 
     series = {
@@ -156,6 +160,13 @@ def make_fixtures():
             "date": recent(6), "submitter": alice,
             "version": 1, "total": 1,
             "mbox": "/mbox-series/1003",
+        },
+        1004: {
+            "id": 1004, "url": "/api/series/1004/", "web_url": "/series/1004/",
+            "project": project2, "name": "A series in the other project",
+            "date": recent(3), "submitter": alice,
+            "version": 1, "total": 1,
+            "mbox": "/mbox-series/1004",
         },
     }
 
@@ -190,15 +201,18 @@ def make_fixtures():
     }
 
     events = [
-        {"id": 5001, "category": "series-created",
+        {"id": 5001, "category": "series-created", "project": project,
          "date": recent(4),
          "payload": {"series": {"id": 1002}}},
-        {"id": 5002, "category": "patch-created",
+        {"id": 5002, "category": "patch-created", "project": project,
          "date": recent(5),
          "payload": {"patch": {"id": 2001}}},
-        {"id": 5003, "category": "cover-created",
+        {"id": 5003, "category": "cover-created", "project": project,
          "date": recent(5, 1),
          "payload": {"cover": {"id": 6001}}},
+        {"id": 5004, "category": "series-created", "project": project2,
+         "date": recent(3),
+         "payload": {"series": {"id": 1004}}},
     ]
 
     covers = {
@@ -206,7 +220,7 @@ def make_fixtures():
     }
 
     return {
-        "projects": {1: project},
+        "projects": {1: project, 2: project2},
         "series": series,
         "patches": patches,
         "comments": comments,
@@ -230,6 +244,7 @@ class State:
             self.status_overrides = {}
             self.delay_overrides = {}
             self.required_token = None
+            self.reject_events_with_project = False
             self.request_log = []
 
 
@@ -329,6 +344,11 @@ class Handler(BaseHTTPRequestHandler):
         forced_status = matching_override(STATE.status_overrides, path)
         if forced_status is not None:
             self._send_json(forced_status, {"detail": "forced status"})
+            return True
+
+        if (STATE.reject_events_with_project and path.startswith("/api/events/")
+                and "project" in qs):
+            self._send_json(502, {"detail": "simulated project= 502"})
             return True
 
         delay = matching_override(STATE.delay_overrides, path)
@@ -509,6 +529,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/_control/require-token":
             with STATE.lock:
                 STATE.required_token = body.get("token")
+            self._send_json(200, {"ok": True})
+        elif path == "/_control/set-reject-events-with-project":
+            with STATE.lock:
+                STATE.reject_events_with_project = bool(body.get("on"))
             self._send_json(200, {"ok": True})
         elif path == "/_control/shutdown":
             self._send_json(200, {"ok": True})

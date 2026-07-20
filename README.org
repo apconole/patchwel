@@ -80,6 +80,9 @@ Each entry is a plist with ~:url~, ~:token~, and ~:projects~:
   request (series/patches/comments/checks/events) to this server
   instead of ~patchwork-sync-timeout~. See below; leave ~nil~ for the
   default.
+- ~:events-omit-project~ — optional boolean; never send ~project=~ on
+  ~/events/~ requests to this server at all. See below; leave ~nil~
+  unless you've actually hit the specific bug it works around.
 
 For any server that hosts many unrelated projects (~patchwork.ozlabs.org~
 and ~patchwork.kernel.org~ both host hundreds), set ~:projects~
@@ -126,6 +129,19 @@ per server if you already know what a given deployment needs:
   out" for one server/project and a forced resync (~C-u g~) doesn't
   help either, raise that server's ~:sync-timeout~ rather than the
   global default.
+- *~project=~ breaking ~/events/~ entirely*: on ~patchwork.kernel.org~
+  (observed on the ~netdevbpf~ project), including ~project=~ on an
+  ~/events/~ request 502s outright, regardless of ~since=~ format or
+  timeout — dropping the parameter fixes it immediately. Real
+  Patchwork events already carry their own ~:project~ field
+  independently of the query filter, so setting a server's
+  ~:events-omit-project~ makes incremental syncs fetch every project's
+  events together and dispatch them to the right one locally (using
+  that field), no extra requests needed. Leave it unset otherwise — on
+  a server hosting many unrelated projects, enabling it means every
+  incremental sync fetches the *entire* server's event history instead
+  of just the project(s) you configured, exactly what ~:projects~ is
+  normally meant to avoid paying for.
 
 ** Other options
 

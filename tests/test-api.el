@@ -12,11 +12,11 @@
 (ert-deftest patchwork-api-test-pagination-concatenates-pages ()
   (patchwork-test-with-mock-server port
     (let ((server (patchwork-test-server-plist port)))
-      ;; 3 series fixtures, force 1 per page so 3 pages are needed
+      ;; 4 series fixtures, force 1 per page so 4 pages are needed
       (let ((series (patchwork-api-list-series server nil '(("per_page" . 1)))))
-        (should (= (length series) 3))
+        (should (= (length series) 4))
         (should (equal (sort (mapcar (lambda (s) (plist-get s :id)) series) #'<)
-                       '(1001 1002 1003)))))))
+                       '(1001 1002 1003 1004)))))))
 
 (ert-deftest patchwork-api-test-http-error-status ()
   (patchwork-test-with-mock-server port
