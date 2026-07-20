@@ -61,6 +61,25 @@
               (should (search-forward "> new reply text" nil t))))
         (kill-buffer)))))
 
+(ert-deftest patchwork-mail-test-compose-hook-runs-in-composed-buffer ()
+  (let* ((user-mail-address "me@example.com")
+         (hook-buffer nil)
+         (patchwork-mail-compose-hook
+          (list (lambda ()
+                  (setq hook-buffer (current-buffer))
+                  (message-add-header
+                   (format-time-string "Gcc: nnfolder+archive:sent.%Y-%m"))))))
+    (let ((comment (list :author "Bob Reviewer" :submitter-email "bob@example.com"
+                          :subject "a patch" :msgid "<comment-1@x>"
+                          :content "reply text")))
+      (patchwork-mail-reply-to-comment comment)
+      (unwind-protect
+          (progn
+            (should (eq hook-buffer (current-buffer)))
+            (should (equal (message-fetch-field "Gcc")
+                            (format-time-string "nnfolder+archive:sent.%Y-%m"))))
+        (kill-buffer)))))
+
 (ert-deftest patchwork-mail-test-reply-to-patch-prefers-cached-msgid ()
   (patchwork-test-with-temp-db
     (let ((user-mail-address "me@example.com")

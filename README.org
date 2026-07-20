@@ -271,6 +271,47 @@ the [[https://www.gnus.org/manual.html][Gnus manual]] (~message-mode~ itself is 
 [[*Appendix: a minimal mail-sending setup][the appendix]] below for a minimal example that gets a Gmail account
 able to send via ~smtpmail~ and ~~/.authinfo.gpg~.
 
+Note: since replies are composed via plain ~message-mail~ rather than
+through Gnus's own summary-reply commands, a Gnus-specific sent-mail
+archiving setup (a Gcc: header inserted by matching a posting style
+against reply/group context that a plain ~message-mail~ buffer never
+has) may not fire the way it does for a reply sent directly from Gnus,
+even though the same ~message-mode-hook~ still runs. If your normal
+replies get archived somewhere and a patchwel-composed one doesn't,
+see ~patchwork-mail-compose-hook~ under [[*Custom hooks][Custom hooks]] to add whatever
+Gcc/Fcc header your setup needs.
+
+The same gap applies to Gnus's "replied" mark on the original
+article: replying from a Gnus summary buffer registers a send action
+that marks the source article once the reply is actually sent, but a
+patchwel-composed reply never goes through that summary-buffer flow,
+so the original never gets marked. *Unverified idea, not tested
+against a live Gnus/backend setup* -- since the Message-ID being
+replied to is already sitting in the composed buffer's In-Reply-To
+header, a similar send action can be registered by hand in
+~patchwork-mail-compose-hook~:
+
+#+begin_src emacs-lisp
+(add-hook 'patchwork-mail-compose-hook
+          (lambda ()
+            (let ((msgid (message-fetch-field "In-Reply-To")))
+              (when msgid
+                (message-add-action
+                 (lambda ()
+                   (save-window-excursion
+                     (when (gnus-summary-refer-article msgid)
+                       (gnus-summary-mark-article-as-replied msgid))))
+                 'send)))))
+#+end_src
+
+~gnus-summary-refer-article~ locates which group/article a Message-ID
+belongs to (via the registry if ~gnus-registry-mode~ is on, or
+~gnus-refer-article-methods~ otherwise); ~gnus-summary-mark-article-as-replied~
+is the same primitive Gnus's own reply flow uses to set the mark. Try
+it and confirm the "replied" mark actually shows up in your summary
+buffer afterward -- some Gnus versions may want a numeric article
+number there instead of the Message-ID string.
+
 ** Applying a series and starting a review
 
 Beyond the ~a~/~R~ keybindings above, applying is also available as
@@ -371,7 +412,7 @@ own, so the directory only grows. Two ways to reclaim that space:
 
 * Custom hooks
 
-Two extension points let you plug in your own behavior without
+Three extension points let you plug in your own behavior without
 modifying patchwel itself:
 
 - ~patchwork-api-challenge-hook~ — run when a Patchwork server's
@@ -400,6 +441,22 @@ modifying patchwel itself:
   rather than a range of commits across a whole tree — but it still
   works as normal on any file touched by a just-applied series
   (~M-x git-timemachine~ in that file's buffer).
+- ~patchwork-mail-compose-hook~ — run with no arguments once a reply
+  (see [[*Replying to comments and patches][Replying to comments and patches]]) is fully composed, in that
+  ~message-mode~ buffer. Since replies are composed via plain
+  ~message-mail~ rather than through Gnus's own summary-reply commands,
+  Gnus-specific context such a buffer would normally have
+  (~gnus-newsgroup-name~, ~message-reply-headers~) is never set, so any
+  sent-mail archiving that depends on it may not fire. Use this hook to
+  insert whatever your setup needs, e.g. a Gcc header matching a
+  monthly-rotating archive group:
+  #+begin_src emacs-lisp
+  (add-hook 'patchwork-mail-compose-hook
+            (lambda ()
+              (message-add-header
+               (format-time-string "Gcc: nnfolder+archive:sent.%Y-%m"))))
+  #+end_src
+  Empty by default.
 
 * Background sync via cron
 

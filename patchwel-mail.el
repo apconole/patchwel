@@ -8,6 +8,40 @@
 (require 'patchwel-db)
 (require 'patchwel-api)
 
+(defvar patchwork-mail-compose-hook nil
+  "Hook run with no arguments once `patchwork-mail-reply-to-comment'/
+`-to-patch' have finished composing a reply, in that message-mode
+buffer (current buffer), after the quoted body is inserted.
+
+Patchwel composes replies via plain `message-mail' rather than
+through Gnus's own summary-reply commands, so Gnus-specific context
+such a buffer would normally have (`gnus-newsgroup-name',
+`message-reply-headers') is never set -- meaning any sent-mail
+archiving that depends on it (a Gcc: header inserted by
+`gnus-configure-posting-style' matching on group/reply context, for
+instance) may not fire the way it would for a reply you sent directly
+from Gnus, even though the very same `message-mode-hook' still runs.
+Use this hook to insert whatever your setup actually needs, e.g. a
+Gcc header matching a monthly-rotating archive group (a common Gnus
+convention, e.g. \"nnfolder+archive:sent.2026-07\" for this month --
+adjust the group name to match your own archive method/naming):
+
+  (add-hook \\='patchwork-mail-compose-hook
+            (lambda ()
+              (message-add-header
+               (format-time-string \"Gcc: nnfolder+archive:sent.%Y-%m\"))))
+
+or to set the Gnus context posting-style matching depends on before
+asking Gnus to (re-)apply it:
+
+  (add-hook \\='patchwork-mail-compose-hook
+            (lambda ()
+              (setq gnus-newsgroup-name \"nntp+news.example.com:some.group\")
+              (gnus-configure-posting-style)))
+
+Empty by default -- patchwel doesn't guess at Gcc/Fcc conventions it
+can't verify.")
+
 (defun patchwork-mail--normalize-header (value)
   "Collapse folded whitespace (newline + continuation indent) in VALUE
 into single spaces, or return nil unchanged."
@@ -68,7 +102,9 @@ new message threads one level deeper."
 COMMENT is a plist as returned by `patchwork-db-get-comment'.  To/Cc,
 In-Reply-To, and References are populated the same way a Gnus wide
 reply to the original email would, and COMMENT's content is inserted
-quoted one level deeper than it already was."
+quoted one level deeper than it already was.  Runs
+`patchwork-mail-compose-hook' once done, in case your setup needs to
+add a Gcc/Fcc header or similar for sent-mail archiving."
   (let* ((recipients (patchwork-mail--wide-reply-recipients comment))
          (to (car recipients))
          (cc (cdr recipients))
@@ -94,7 +130,8 @@ quoted one level deeper than it already was."
                        (or (plist-get comment :author) "")
                        (or (plist-get comment :submitter-email) "")))
       (insert (patchwork-mail--quote-content (or (plist-get comment :content) "")))
-      (insert "\n"))))
+      (insert "\n"))
+    (run-hooks 'patchwork-mail-compose-hook)))
 
 (defun patchwork-mail--header-value (headers key)
   "Return HEADERS's KEY as a single string, or nil if absent.
