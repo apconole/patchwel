@@ -6,6 +6,38 @@ Tracks high-level features not yet implemented. Each entry is a goal
 and design notes, not a committed implementation plan — flesh out
 further when work actually starts.
 
+* DONE Prune cached patch mbox files
+
+`patchwork-git-download-patch' caches every patch mbox it ever
+downloads in `patchwork-git-temp-dir' indefinitely -- nothing cleaned
+up after itself, so the directory only grows. Two ways to reclaim
+that space:
+
+- ~M-x patchwork-git-prune-patches~ deletes cached files older than
+  `patchwork-patch-cache-max-age-days' (default 30), or with a prefix
+  arg, every cached file regardless of age. Prompts for confirmation,
+  reports how many files/how much space were freed.
+- Automatic, during sync: `patchwork-prune-on-terminal-states' (a list
+  of state strings, defaulting to accepted/rejected/deferred/
+  changes-requested/superseded/not-applicable -- on by default,
+  adjustable since state names vary by deployment, or set to nil to
+  disable) drives `patchwork-cache--maybe-prune-patch', called from
+  `patchwork-cache--sync-patch'. When a sync observes a patch's state
+  transitioning from something not in that list into something that
+  is, its cached mbox (if it has one) is deleted immediately --
+  review/apply work is presumably done by then. Keyed off a real
+  state *transition* (comparing the previously-cached row's state to
+  the freshly synced one), not just "is this patch's state terminal",
+  so re-syncing an already-terminal patch is a silent no-op rather
+  than repeatedly trying to delete an already-gone file.
+
+Verified: the manual prune command correctly ages files by mtime
+(leaves recent/non-.patch files alone) and honors declining the
+confirmation prompt; the sync-time hook correctly leaves the mbox
+alone on a non-terminal-to-non-terminal transition, prunes it on a
+non-terminal-to-terminal one, and is a no-op re-syncing an
+already-terminal patch or with the state list set to nil.
+
 * TODO Asynchronous/offline-tolerant patch delegation
 
 Setting a patch's delegate (~patchwork-api-set-delegate~) is currently
@@ -50,16 +82,74 @@ and References headers via the API, cached in the `comments' table's
 ~in_reply_to_header~/~references_header~ columns -- so threading can
 be built from real header data, not ordering/quoting heuristics.
 
-* TODO Apply a series and start a review
+* DONE Apply a series and start a review
 
-Extend beyond ~patchwork-apply-series~ (which just applies the patches
-to a git tree) to also kick off a review using whatever review
-tooling is available/configured in the user's Emacs (e.g. a
-configurable list of review backends/modes to try, since this will
-vary a lot by setup — diff-mode, magit, forge, code-review.el, or
-something project-specific). Needs a pluggable
-"start a review for these applied commits" hook rather than hardcoding
-one tool.
+~R~ (~patchwork-series-review-at-point~ in the main listing,
+~patchwork-series-detail-review~ in a series detail buffer, or
+~M-x patchwork-review-series~) applies every patch in a series to its
+project's configured git tree and opens a browsable view of the
+result, via two new pieces in ~patchwel-git.el~:
+
+- ~patchwork-apply-series-as-commits~ downloads each patch's mbox and
+  hands the whole set to a single ~git am --3way~ call, so every patch
+  becomes its own real commit (author, date, and commit message
+  preserved from the mail), unlike the existing
+  ~patchwork-apply-series~/~git apply~ path, which only ever touches
+  the working tree. ~--3way~ means a failing patch falls back to a
+  real merge with conflict markers rather than simply refusing to
+  apply. Returns the before/after HEAD commit hashes, or nil (leaving
+  the tree mid-~am~) if a patch fails to apply -- in which case a
+  ~*patchwork-am: <repo>*~ buffer is shown automatically with ~git
+  am~'s output, the patch it was blocked on, and each conflicted file
+  as a button to open directly, so there's no need to drop to a shell
+  to see what happened. ~patchwork-git-am-status~ shows the same thing
+  on demand (e.g. coming back to it later); ~patchwork-git-am-continue~/
+  ~-skip~/~-abort~ run the matching ~git am~ subcommand and refresh
+  that buffer with the result, all from within Emacs.
+- ~patchwork-review-backends~ is a pluggable hook
+  (~run-hook-with-args-until-success~, called with REPO-DIR BEFORE-REV
+  AFTER-REV) of "start a review for these applied commits" backends,
+  tried in order. Built-in backends: ~patchwork-review-backend-magit~
+  (magit's log buffer over the range, when magit is loaded) and
+  ~patchwork-review-backend-vc~ (a ~log-view-mode~ buffer via
+  ~vc-print-log-internal~ with the Git backend passed explicitly,
+  since the usual ~vc-print-root-log~/~vc-deduce-backend~ path infers
+  the backend from the current buffer's major mode/~vc-mode~ and fails
+  right after applying a series, before any file-visiting buffer under
+  version control exists). Both give the usual n/p-between-commits,
+  RET-to-view-diff navigation their mode already provides.
+  ~git-timemachine~ doesn't fit this hook (it walks one file's history,
+  not a range of commits across a tree) but still works as normal on
+  any file touched by the series once applied.
+
+Per-project git tree configuration: ~patchwork-project-git-trees~ (an
+alist keyed by (SERVER-URL . PROJECT-SLUG)) plus
+~patchwork-project-git-tree~, which looks up a project's configured
+tree or prompts once and offers to save the answer, since different
+projects usually need different trees.
+
+Per-project branch-apply strategy: ~patchwork-project-branch-strategies~
+(same (SERVER-URL . PROJECT-SLUG) alist shape, falling back to
+~patchwork-default-branch-strategy~) controls whether applying a
+series creates its own branch rather than landing on whatever is
+currently checked out. nil (the default) means apply as-is; a string
+of the form ~"BASE:TARGET-TEMPLATE"~, e.g. ~"upstream/main:review_%i"~,
+means create and check out a new branch named by substituting the
+series id for any ~%i~ in TARGET-TEMPLATE (~review_514346~ here), based
+on BASE (~upstream/main~). Parsed by ~patchwork-parse-branch-strategy~,
+applied by ~patchwork-git--maybe-checkout-branch~ (used by both
+~patchwork-apply-series~ and ~patchwork-apply-series-as-commits~, so it
+applies to reviews and plain working-tree-only applies alike). Errors
+out rather than reusing or resetting an already-existing target
+branch -- applying the same series twice under a strategy is a
+mistake to surface, not silently overwrite.
+
+Verified against a scratch repo and hand-built two-patch mbox series
+(both the happy path -- two real commits produced with correct
+author/date/message, and the vc/magit backends each opening the
+correct range in their respective log views -- and the conflict path,
+where ~git am~ fails cleanly and leaves the repo in a normal mid-~am~
+state for `git am --continue`/`--abort`).
 
 * DONE Reply to a comment as a mail message
 

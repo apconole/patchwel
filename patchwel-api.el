@@ -124,36 +124,40 @@ giving up."
                                   :null-object nil :false-object nil)
               next)))))
 
-(defun patchwork-api--request-once (server url method params)
-  "Perform a single HTTP request to URL on SERVER and return (BODY . NEXT-LINK)."
+(defun patchwork-api--request-once (server url method params timeout)
+  "Perform a single HTTP request to URL on SERVER and return (BODY . NEXT-LINK).
+Gives up after TIMEOUT seconds."
   (let* ((url-request-method (upcase (symbol-name method)))
          (url-request-extra-headers (patchwork-api--headers server))
          (url-user-agent (patchwork-server-user-agent server))
          (url-request-data
           (when (and params (not (memq method '(get))))
             (encode-coding-string (json-encode params) 'utf-8)))
-         (buffer (url-retrieve-synchronously url t t patchwork-sync-timeout)))
+         (buffer (url-retrieve-synchronously url t t timeout)))
     (unless buffer
-      (signal 'patchwork-api-timeout-error (list url patchwork-sync-timeout)))
+      (signal 'patchwork-api-timeout-error (list url timeout)))
     (unwind-protect
         (patchwork-api--process-response server url buffer)
       (kill-buffer buffer))))
 
-(defun patchwork-api-request (server path &optional method params)
+(defun patchwork-api-request (server path &optional method params timeout)
   "Make a request to PATH on SERVER using METHOD and PARAMS.
 SERVER is a plist as found in `patchwork-servers'.  METHOD defaults to
 `get'.  For GET requests, PARAMS is encoded as a query string; for
 other methods it is sent as a JSON body.  When the response is a
-paginated list, all pages are fetched and concatenated."
+paginated list, all pages are fetched and concatenated.  TIMEOUT
+defaults to `patchwork-sync-timeout'; pass a larger value for requests
+expected to be slower (see `patchwork-detail-fetch-timeout')."
   (let* ((method (or method 'get))
+         (timeout (or timeout patchwork-sync-timeout))
          (url (concat (plist-get server :url) path
                        (if (eq method 'get) (patchwork-api--build-query params) ""))))
-    (let ((result (patchwork-api--request-once server url method params))
+    (let ((result (patchwork-api--request-once server url method params timeout))
           (accumulated nil))
       (push (car result) accumulated)
       (let ((next (cdr result)))
         (while next
-          (let ((page (patchwork-api--request-once server next 'get nil)))
+          (let ((page (patchwork-api--request-once server next 'get nil timeout)))
             (push (car page) accumulated)
             (setq next (cdr page)))))
       (setq accumulated (nreverse accumulated))
@@ -161,13 +165,16 @@ paginated list, all pages are fetched and concatenated."
           (apply #'append accumulated)
         (car accumulated)))))
 
-(defun patchwork-api-fetch-raw (server url)
-  "Fetch URL on SERVER and return its response body as a plain string (not JSON)."
-  (let* ((url-request-extra-headers (patchwork-api--headers server))
+(defun patchwork-api-fetch-raw (server url &optional timeout)
+  "Fetch URL on SERVER and return its response body as a plain string (not JSON).
+TIMEOUT defaults to `patchwork-detail-fetch-timeout', since this is
+used to download a patch's full mbox."
+  (let* ((timeout (or timeout patchwork-detail-fetch-timeout))
+         (url-request-extra-headers (patchwork-api--headers server))
          (url-user-agent (patchwork-server-user-agent server))
-         (buffer (url-retrieve-synchronously url t t patchwork-sync-timeout)))
+         (buffer (url-retrieve-synchronously url t t timeout)))
     (unless buffer
-      (signal 'patchwork-api-timeout-error (list url patchwork-sync-timeout)))
+      (signal 'patchwork-api-timeout-error (list url timeout)))
     (unwind-protect
         (with-current-buffer buffer
           (goto-char (point-min))
@@ -190,13 +197,15 @@ paginated list, all pages are fetched and concatenated."
 
 (defun patchwork-api-get-series (server series-id)
   "Get detailed information for SERIES-ID on SERVER."
-  (patchwork-api-request server (format "/series/%s/" series-id) 'get))
+  (patchwork-api-request server (format "/series/%s/" series-id) 'get nil
+                          patchwork-detail-fetch-timeout))
 
 (defun patchwork-api-get-cover (server cover-id)
   "Get detailed information for the cover letter COVER-ID on SERVER.
 Like a patch, its response includes a :series field (a list of series
 references) naming which series it belongs to."
-  (patchwork-api-request server (format "/covers/%s/" cover-id) 'get))
+  (patchwork-api-request server (format "/covers/%s/" cover-id) 'get nil
+                          patchwork-detail-fetch-timeout))
 
 (defun patchwork-api-list-patches (server &optional project params)
   "List patches on SERVER, optionally scoped to PROJECT, with extra query PARAMS."
@@ -208,7 +217,8 @@ references) naming which series it belongs to."
 
 (defun patchwork-api-get-patch (server patch-id)
   "Get detailed information for PATCH-ID on SERVER."
-  (patchwork-api-request server (format "/patches/%s/" patch-id) 'get))
+  (patchwork-api-request server (format "/patches/%s/" patch-id) 'get nil
+                          patchwork-detail-fetch-timeout))
 
 (defun patchwork-api-list-comments (server patch-id)
   "List comments for PATCH-ID on SERVER."

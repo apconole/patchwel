@@ -118,12 +118,24 @@ when a server has no events API) reaches."
 
 (defcustom patchwork-sync-timeout 5
   "Seconds to wait for a single Patchwork API HTTP request before giving up.
-Applies to every individual request (series/patches/comments/checks/
+Applies to list/summary requests (series/patches/comments/checks/
 events/etc.), not to a whole sync as one unit; a sync that makes many
 requests can still take longer than this in total.  Combined with the
 per-server error isolation in `patchwork-cache-sync', a slow or
 unreachable server will time out and be skipped rather than blocking
-the rest of the sync."
+the rest of the sync.  See `patchwork-detail-fetch-timeout' for the
+(usually larger) timeout used for a single patch/series/cover's full
+detail and mbox, which tend to be slower requests."
+  :type 'integer
+  :group 'patchwork)
+
+(defcustom patchwork-detail-fetch-timeout 15
+  "Seconds to wait for a single patch/series/cover detail or mbox request
+before giving up.  These carry a patch's full commit message and diff
+(or the raw mbox itself), so they are typically slower and larger than
+the list/summary requests governed by `patchwork-sync-timeout' --
+timing out at that shorter default has been observed in practice on
+fetches that would otherwise have succeeded given a bit longer."
   :type 'integer
   :group 'patchwork)
 
@@ -151,6 +163,22 @@ match whatever your server(s) actually use."
   :type '(repeat string)
   :group 'patchwork)
 
+(defcustom patchwork-prune-on-terminal-states
+  '("accepted" "rejected" "deferred" "changes-requested" "superseded"
+    "not-applicable")
+  "Patch states considered \"terminal\" -- no longer in progress.
+When a sync observes a patch transitioning from some other state into
+one of these, its cached mbox file (downloaded by
+`patchwork-git-download-patch' into `patchwork-git-temp-dir'), if any,
+is deleted; review/apply work is presumably done by then, and
+downloading it again later just re-fetches it.  Note that Patchwork's
+built-in state names vary by deployment/project configuration (see
+`patchwork-default-state-filter'); adjust this list to match whichever
+of your servers' state names actually mean \"finished\".  Set to nil to
+disable this pruning entirely."
+  :type '(repeat string)
+  :group 'patchwork)
+
 (defcustom patchwork-my-identities nil
   "List of strings (usernames or email addresses) considered \"you\".
 Used for highlighting, e.g. a series assigned to one of these is shown
@@ -172,6 +200,90 @@ buffer."
 comment activity."
   :type 'integer
   :group 'patchwork)
+
+(defcustom patchwork-project-git-trees nil
+  "Alist mapping (SERVER-URL . PROJECT-SLUG) to a git repository directory.
+Used when applying a series' patches, since different projects
+typically need different trees (different repositories entirely, or
+different worktrees/branches of the same one).  Populated on demand by
+`patchwork-project-git-tree', which prompts and offers to save an
+answer here the first time a given project is applied; edit directly
+via \\[customize-variable] to fix a wrong path or set one up ahead of
+time."
+  :type '(alist :key-type (cons (string :tag "Server URL")
+                                 (string :tag "Project slug"))
+                :value-type (directory :tag "Git repository directory"))
+  :group 'patchwork)
+
+(defun patchwork-project-git-tree (server-url project-slug)
+  "Return the git repository directory configured for PROJECT-SLUG on
+SERVER-URL in `patchwork-project-git-trees'.  If none is configured
+yet, prompt for a directory and, unless declined, save it there for
+next time."
+  (or (cdr (assoc (cons server-url project-slug) patchwork-project-git-trees))
+      (let ((dir (read-directory-name
+                  (format "Git repository directory for project %s on %s: "
+                          project-slug server-url))))
+        (when (y-or-n-p "Remember this as the git tree for this project? ")
+          (setq patchwork-project-git-trees
+                (cons (cons (cons server-url project-slug) dir)
+                      patchwork-project-git-trees))
+          (customize-save-variable 'patchwork-project-git-trees
+                                    patchwork-project-git-trees))
+        dir)))
+
+(defcustom patchwork-project-branch-strategies nil
+  "Alist mapping (SERVER-URL . PROJECT-SLUG) to a branch-apply strategy
+for that project, or nil to just apply a series to whatever branch/
+commit is currently checked out in its git tree (see
+`patchwork-project-git-tree').  A project with no entry here falls
+back to `patchwork-default-branch-strategy'.
+
+A strategy is a string of the form \"BASE:TARGET-TEMPLATE\", e.g.
+\"upstream/main:review_%i\":
+
+  BASE             A ref to create a new branch from every time a
+                   series is applied, e.g. \"upstream/main\".
+  TARGET-TEMPLATE  The name given to that new branch, with any \"%i\"
+                   replaced by the series id being applied, e.g.
+                   \"review_%i\" becoming \"review_514346\".
+
+See `patchwork-parse-branch-strategy'.  Applying a series errors out
+rather than reusing or resetting an already-existing target branch."
+  :type '(alist :key-type (cons (string :tag "Server URL")
+                                 (string :tag "Project slug"))
+                :value-type (choice (const :tag "Apply to current tree" nil)
+                                     (string :tag "BASE:TARGET-TEMPLATE")))
+  :group 'patchwork)
+
+(defcustom patchwork-default-branch-strategy nil
+  "Default branch-apply strategy for a project with no entry in
+`patchwork-project-branch-strategies'.  See that variable for the
+\"BASE:TARGET-TEMPLATE\" string format; nil means apply to whatever is
+currently checked out."
+  :type '(choice (const :tag "Apply to current tree" nil)
+                  (string :tag "BASE:TARGET-TEMPLATE"))
+  :group 'patchwork)
+
+(defun patchwork-project-branch-strategy (server-url project-slug)
+  "Return the configured branch-apply strategy string for PROJECT-SLUG on
+SERVER-URL, or nil for \"apply to the current tree\".  See
+`patchwork-project-branch-strategies'."
+  (let ((cell (assoc (cons server-url project-slug) patchwork-project-branch-strategies)))
+    (if cell (cdr cell) patchwork-default-branch-strategy)))
+
+(defun patchwork-parse-branch-strategy (strategy series-id)
+  "Parse STRATEGY, a \"BASE:TARGET-TEMPLATE\" string (see
+`patchwork-project-branch-strategies') or nil, into a
+\(BASE . TARGET-BRANCH) cons with any \"%i\" in the template replaced
+by SERIES-ID, or return nil if STRATEGY is nil."
+  (when strategy
+    (unless (string-match "\\`\\([^:]+\\):\\(.+\\)\\'" strategy)
+      (error "Malformed branch-apply strategy (expected BASE:TARGET-TEMPLATE): %s"
+             strategy))
+    (cons (match-string 1 strategy)
+          (replace-regexp-in-string "%i" (number-to-string series-id)
+                                     (match-string 2 strategy) t t))))
 
 (defun patchwork-server-slug (server)
   "Return a filesystem/buffer-name-safe identifier for SERVER's URL.

@@ -435,6 +435,17 @@ coverage instead of waiting for the next periodic full sync."
                                    (read-directory-name "Git repository directory: ")))
       (message "No series on this line"))))
 
+(defun patchwork-series-review-at-point ()
+  "Apply the series at point as commits and open a review view for them.
+See `patchwork-review-series'."
+  (interactive)
+  (let ((entry (patchwork-series-at-point)))
+    (if entry
+        (let ((server (or (patchwork-servers-find (car entry))
+                           (error "Unknown Patchwork server: %s" (car entry)))))
+          (patchwork-review-series server (cdr entry)))
+      (message "No series on this line"))))
+
 (defun patchwork-series-set-filter ()
   "Interactively edit this buffer's state/server/project/author filter.
 Each prompt is pre-filled with the current value; clear the input to
@@ -475,6 +486,7 @@ remove that dimension (show every value for it)."
     (define-key map "g" #'patchwork-series-refresh)
     (define-key map "G" #'patchwork-fetch-series)
     (define-key map "a" #'patchwork-series-apply-at-point)
+    (define-key map "R" #'patchwork-series-review-at-point)
     (define-key map "f" #'patchwork-series-set-filter)
     (define-key map "F" #'patchwork-series-reset-filter)
     (define-key map "n" #'patchwork-series-next)
@@ -817,6 +829,7 @@ aren't part of the cached list-view data) and replies to it."
     (define-key map "r" #'patchwork-series-detail-reply-at-point)
     (define-key map "g" #'patchwork-series-detail-refresh)
     (define-key map "a" #'patchwork-series-detail-apply)
+    (define-key map "R" #'patchwork-series-detail-review)
     (define-key map "n" #'patchwork-series-detail-next-patch)
     (define-key map "p" #'patchwork-series-detail-prev-patch)
     (define-key map "N" #'patchwork-series-detail-next-comment)
@@ -858,6 +871,16 @@ you're currently looking at, without leaving this buffer."
                               patchwork-series-detail--server-url))))
       (patchwork-apply-series server patchwork-series-detail--id
                                (read-directory-name "Git repository directory: ")))))
+
+(defun patchwork-series-detail-review ()
+  "Apply the series shown in this buffer as commits and open a review view.
+See `patchwork-review-series'."
+  (interactive)
+  (when patchwork-series-detail--id
+    (let ((server (or (patchwork-servers-find patchwork-series-detail--server-url)
+                       (error "Unknown Patchwork server: %s"
+                              patchwork-series-detail--server-url))))
+      (patchwork-review-series server patchwork-series-detail--id))))
 
 (provide 'patchwel-ui)
 

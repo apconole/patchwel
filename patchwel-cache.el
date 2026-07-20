@@ -8,6 +8,7 @@
 (require 'patchwel-config)
 (require 'patchwel-db)
 (require 'patchwel-api)
+(require 'patchwel-git)
 
 (defconst patchwork-cache--tag-patterns
   '(("ack" . "^Acked-by:")
@@ -172,12 +173,28 @@ Returns a plist keyed by the entries in `patchwork-tag-names'."
   (or (seq-some (lambda (p) (plist-get p :delegate)) patches)
       "unassigned"))
 
+(defun patchwork-cache--maybe-prune-patch (server old-state new-patch)
+  "Delete NEW-PATCH's cached mbox file if it just transitioned into a
+terminal state (see `patchwork-prune-on-terminal-states'): OLD-STATE,
+its state before this sync (nil if it wasn't cached before), is not
+terminal, but its new state is."
+  (let ((new-state (plist-get new-patch :state)))
+    (when (and patchwork-prune-on-terminal-states
+               (member new-state patchwork-prune-on-terminal-states)
+               (not (member old-state patchwork-prune-on-terminal-states)))
+      (let ((file (patchwork-git--patch-file server (plist-get new-patch :id))))
+        (when (file-exists-p file)
+          (delete-file file)
+          (message "Patch %s moved to state %s; pruned cached mbox %s."
+                   (plist-get new-patch :id) new-state file))))))
+
 (defun patchwork-cache--sync-patch (server patch-json series-id project-id position)
   "Sync a single PATCH-JSON from SERVER belonging to SERIES-ID at series POSITION.
 Returns a plist describing the cached patch, including freshly synced
 comment and check totals."
   (let* ((server-url (plist-get server :url))
          (id (plist-get patch-json :id))
+         (old-state (plist-get (patchwork-db-get-patch server-url id) :state))
          (comments (ignore-errors (patchwork-api-list-comments server id)))
          (checks (ignore-errors (patchwork-api-list-checks server id)))
          (check-counts (patchwork-cache--count-checks checks))
@@ -213,6 +230,7 @@ comment and check totals."
                        :in-reply-to (patchwork-cache--header-value detail-headers :In-Reply-To)
                        :updated-at (plist-get patch-json :date))))
     (patchwork-db-insert-patch patch)
+    (patchwork-cache--maybe-prune-patch server old-state patch)
     (dolist (comment-json comments)
       (let ((headers (plist-get comment-json :headers)))
         (patchwork-db-insert-comment
