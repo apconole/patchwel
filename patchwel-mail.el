@@ -97,12 +97,31 @@ new message threads one level deeper."
              (split-string content "\n")
              "\n"))
 
+(defun patchwork-mail--compose (to subject other-headers)
+  "Compose a message-mode buffer for TO/SUBJECT/OTHER-HEADERS, preferring
+`gnus-msg-mail' over plain `message-mail' when Gnus is already running
+in this session.  `gnus-msg-mail' is, per its own docstring, \"Like
+`message-mail', but with Gnus paraphernalia, particularly the Gcc:
+header for archiving purposes\" -- it wraps the same `message-mail'
+call in `gnus-setup-message', which is what actually wires up Gcc
+processing at send time; a Gcc header alone (e.g. one added via
+`patchwork-mail-compose-hook') does nothing without it, since nothing
+would be watching for it.  Falls back to plain `message-mail' when
+Gnus isn't running (`gnus-msg-mail' has this same fallback built in,
+but the fboundp/featurep checks here avoid ever loading Gnus just to
+ask -- no behavior or cost change for anyone not already using it)."
+  (if (and (featurep 'gnus) (fboundp 'gnus-msg-mail) (gnus-alive-p))
+      (gnus-msg-mail to subject other-headers)
+    (message-mail to subject other-headers)))
+
 (defun patchwork-mail-reply-to-comment (comment)
   "Compose a wide-reply `message-mode' buffer replying to COMMENT.
 COMMENT is a plist as returned by `patchwork-db-get-comment'.  To/Cc,
 In-Reply-To, and References are populated the same way a Gnus wide
 reply to the original email would, and COMMENT's content is inserted
-quoted one level deeper than it already was.  Runs
+quoted one level deeper than it already was.  Composes via
+`patchwork-mail--compose', which prefers Gnus's own `gnus-msg-mail'
+(sets up Gcc/archiving properly) when Gnus is running.  Runs
 `patchwork-mail-compose-hook' once done, in case your setup needs to
 add a Gcc/Fcc header or similar for sent-mail archiving."
   (let* ((recipients (patchwork-mail--wide-reply-recipients comment))
@@ -113,7 +132,7 @@ add a Gcc/Fcc header or similar for sent-mail archiving."
          (references (patchwork-mail--reply-references comment))
          (other-headers (delq nil
                                (list (and (not (string-empty-p cc)) (cons "Cc" cc))))))
-    (message-mail to subject other-headers)
+    (patchwork-mail--compose to subject other-headers)
     ;; message-setup-1 forcibly regenerates References/In-Reply-To from
     ;; `message-reply-headers' (unset here, since we're not going through a
     ;; real Gnus reply buffer), silently dropping whatever `other-headers'

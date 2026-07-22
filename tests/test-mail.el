@@ -39,6 +39,47 @@
   (should (equal (patchwork-mail--quote-content "> already quoted")
                  "> > already quoted")))
 
+(ert-deftest patchwork-mail-test-compose-prefers-gnus-msg-mail-when-alive ()
+  ;; gnus-msg-mail sets up Gcc/archiving "paraphernalia" a plain
+  ;; message-mail buffer never gets (see its own docstring) -- prefer
+  ;; it whenever Gnus is actually running in this session.
+  (let (called-with)
+    (unwind-protect
+        (progn
+          (fset 'gnus-msg-mail
+                (lambda (to subject other-headers)
+                  (setq called-with (list to subject other-headers))
+                  (get-buffer-create " *fake-gnus-compose*")))
+          (cl-letf (((symbol-function 'featurep) (lambda (f) (eq f 'gnus)))
+                    ((symbol-function 'gnus-alive-p) (lambda () t)))
+            (patchwork-mail--compose "bob@example.com" "Re: x" nil))
+          (should (equal called-with '("bob@example.com" "Re: x" nil))))
+      (fmakunbound 'gnus-msg-mail)
+      (when (get-buffer " *fake-gnus-compose*") (kill-buffer " *fake-gnus-compose*")))))
+
+(ert-deftest patchwork-mail-test-compose-falls-back-when-gnus-not-alive ()
+  (let (message-mail-called gnus-msg-mail-called)
+    (unwind-protect
+        (progn
+          (fset 'gnus-msg-mail (lambda (&rest _) (setq gnus-msg-mail-called t)))
+          (cl-letf (((symbol-function 'featurep) (lambda (f) (eq f 'gnus)))
+                    ((symbol-function 'gnus-alive-p) (lambda () nil))
+                    ((symbol-function 'message-mail)
+                     (lambda (&rest _) (setq message-mail-called t))))
+            (patchwork-mail--compose "bob@example.com" "Re: x" nil))
+          (should message-mail-called)
+          (should-not gnus-msg-mail-called))
+      (fmakunbound 'gnus-msg-mail))))
+
+(ert-deftest patchwork-mail-test-compose-falls-back-when-gnus-not-loaded ()
+  (let (message-mail-called)
+    (cl-letf (((symbol-function 'message-mail)
+               (lambda (&rest _) (setq message-mail-called t))))
+      ;; gnus is not a member of `features' in a plain ERT batch run
+      (should-not (featurep 'gnus))
+      (patchwork-mail--compose "bob@example.com" "Re: x" nil))
+    (should message-mail-called)))
+
 (ert-deftest patchwork-mail-test-reply-to-comment-composes-full-buffer ()
   (let ((user-mail-address "me@example.com"))
     (let ((comment (list :author "Bob Reviewer" :submitter-email "bob@example.com"

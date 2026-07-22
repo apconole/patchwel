@@ -288,15 +288,18 @@ the [[https://www.gnus.org/manual.html][Gnus manual]] (~message-mode~ itself is 
 [[*Appendix: a minimal mail-sending setup][the appendix]] below for a minimal example that gets a Gmail account
 able to send via ~smtpmail~ and ~~/.authinfo.gpg~.
 
-Note: since replies are composed via plain ~message-mail~ rather than
-through Gnus's own summary-reply commands, a Gnus-specific sent-mail
-archiving setup (a Gcc: header inserted by matching a posting style
-against reply/group context that a plain ~message-mail~ buffer never
-has) may not fire the way it does for a reply sent directly from Gnus,
-even though the same ~message-mode-hook~ still runs. If your normal
-replies get archived somewhere and a patchwel-composed one doesn't,
-see ~patchwork-mail-compose-hook~ under [[*Custom hooks][Custom hooks]] to add whatever
-Gcc/Fcc header your setup needs.
+Note: replies compose through ~gnus-msg-mail~ instead of plain
+~message-mail~ whenever Gnus is actually running in the current
+session (~gnus-alive-p~) — per its own docstring, ~gnus-msg-mail~ is
+"like ~message-mail~, but with Gnus paraphernalia, particularly the
+Gcc: header for archiving purposes", since a Gcc header alone does
+nothing without going through the setup (~gnus-setup-message~) that
+actually processes it at send time. Falls back to plain ~message-mail~
+when Gnus isn't running, exactly as before. If you're not running
+Gnus at all (a plain ~smtpmail~ setup, say) and still want sent replies
+archived somewhere, or Gnus's own posting-style matching still isn't
+picking up the way you expect, see ~patchwork-mail-compose-hook~ under
+[[*Custom hooks][Custom hooks]] to add whatever Gcc/Fcc header your setup needs by hand.
 
 The same gap applies to Gnus's "replied" mark on the original
 article: replying from a Gnus summary buffer registers a send action

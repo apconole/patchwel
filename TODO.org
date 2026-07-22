@@ -6,6 +6,37 @@ Tracks high-level features not yet implemented. Each entry is a goal
 and design notes, not a committed implementation plan — flesh out
 further when work actually starts.
 
+* DONE Compose replies via gnus-msg-mail when Gnus is running
+
+`patchwork-mail-compose-hook' (added earlier so a hand-added Gcc header
+could be inserted) turned out not to be enough on its own: a Gcc header
+does nothing unless something is actually watching for it at send time,
+and that watcher only gets wired up by Gnus's own composition setup
+(`gnus-setup-message'), which a plain `message-mail' call never goes
+through.
+
+New `patchwork-mail--compose' prefers `gnus-msg-mail' -- which is,
+per its own docstring, "like `message-mail', but with Gnus
+paraphernalia, particularly the Gcc: header for archiving purposes" --
+whenever Gnus is actually running in the session (`(and (featurep
+'gnus) (fboundp 'gnus-msg-mail) (gnus-alive-p))`), falling back to
+plain `message-mail' otherwise (`gnus-msg-mail' has this same fallback
+built in too, but the checks here avoid ever autoloading/loading Gnus
+just to ask, so there's no cost or behavior change for anyone not
+already using it).
+
+Confirmed via `(find-function-noselect 'gnus-msg-mail)` that it wraps
+the same `message-mail' call inside `gnus-setup-message', and
+empirically (a minimal faked-"alive" Gnus session) that composing this
+way does invoke real Gnus message-composition machinery
+(`gnus-configure-posting-styles', `gnus-message-citation-mode', etc.)
+that a plain `message-mail' buffer never triggers -- confirming this is
+the actual missing mechanism, not just a documentation gap. Also found
+along the way: a plain `let'-binding of the special variable `features'
+does not fool `featurep' (some internal caching bypasses it), so the
+new tests stub `featurep' itself via `cl-letf' rather than trying to
+fake feature-loadedness that way.
+
 * DONE Parallel cron sync, one process per server
 
 `patchwork-cron-sync.el' now supports a per-server mode: given a
