@@ -6,6 +6,52 @@ Tracks high-level features not yet implemented. Each entry is a goal
 and design notes, not a committed implementation plan — flesh out
 further when work actually starts.
 
+* DONE Parallel cron sync, one process per server
+
+`patchwork-cron-sync.el' now supports a per-server mode: given a
+server URL as its argument (everything after Emacs's own `--' on the
+command line), it syncs only that one server rather than every
+configured one. A new `patchwork-cron-sync-parallel.sh' drives this
+once per configured server concurrently instead of one process working
+through all of them serially -- a sync's wall-clock time is dominated
+by serialized network round-trips, not by Emacs Lisp itself, so this
+is a real speedup for multi-server setups without needing to rewrite
+anything in another language. The server list is read from
+`patchwork-cron-sync.el' itself via a `--list-servers' mode (prints
+each configured `:url', no sync, no db access), so it's never
+duplicated between the two files.
+
+Two real bugs found and fixed while implementing this, both re: Emacs
+batch argument handling, neither obvious in advance:
+
+- `command-line-args-left' still contains the literal "--" marker at
+  the point a `-l' script runs (Emacs only treats it as "stop parsing
+  my own options" when its own sequential loop reaches that position,
+  not before). Naively filtering `command-line-args-left' by deleting
+  "--" *from that same global* corrupts Emacs's own remaining-argument
+  queue, since it's the actual mutable state Emacs's top-level loop
+  keeps popping from after the script returns, not just a read-only
+  snapshot -- once the script returns, Emacs resumes past where "--"
+  used to be and tries to parse whatever's left (e.g.
+  "--list-servers") as one of its own unrecognized options. Fixed by
+  reading a locally-filtered copy for the script's own use and setting
+  the global to nil when done, so Emacs's own loop has nothing left to
+  trip over.
+- A non-`-Q' `emacs` invocation can load site-wide init files
+  (`/usr/share/emacs/site-lisp/site-start.d/*`, common on Linux
+  distro packages) that print to stdout -- harmless noise for a plain
+  sync, but fatal for `--list-servers', whose output the wrapper
+  script parses as a literal list of server URLs. Fixed by invoking
+  Emacs with `-Q' in the wrapper script.
+
+Verified against two real mock-server instances standing in for two
+configured servers: `--list-servers` prints exactly the two URLs;
+single-server-argument mode touches only its own server's rows in the
+shared db; two such processes running concurrently both complete and
+write cleanly to the same WAL-mode db with no locking errors; the
+no-argument (serial, unchanged-default) mode still works exactly as
+before.
+
 * DONE tmt-based test suite with a mock Patchwork server and CI
 
 74 ~ert-deftest~ tests across 9 areas (~tests/test-db.el~,

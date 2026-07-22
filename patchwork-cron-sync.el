@@ -15,15 +15,27 @@
 ;; your real init.el (same `patchwork-servers' etc.), or `load' a config
 ;; file that both this script and your init.el share.
 ;;
-;; Usage: adjust the `add-to-list' and `setq' forms below for your setup,
-;; then add a crontab entry such as:
+;; Usage, single process, every configured server synced serially (as
+;; before -- fine for a small number of servers/projects):
 ;;
 ;;   */5 * * * * /usr/bin/emacs --batch -l ~/.emacs.d/patchwork-cron-sync.el >> ~/.cache/patchwel/sync.log 2>&1
+;;
+;; Usage, one server per SERVER-URL argument (everything after Emacs's own
+;; `--' marker on the command line): syncs only that one server, letting a
+;; wrapper run several of these concurrently instead of serially -- see
+;; `patchwork-cron-sync-parallel.sh', which drives exactly that by first
+;; asking this same file (via `--list-servers') for the configured server
+;; URLs, so the list only ever lives in one place:
+;;
+;;   emacs --batch -l ~/.emacs.d/patchwork-cron-sync.el -- https://patchwork.ozlabs.org/api
 ;;
 ;; Running more often than `patchwork-cache-ttl' is harmless: the sync is
 ;; a no-op (no network traffic) until the cache is actually due for
 ;; another look, so cron's interval just controls the worst-case latency
 ;; before new upstream activity shows up, not how often requests fire.
+;; The local db is opened in WAL mode with a busy timeout specifically so
+;; several of these processes (one per server) can write to it
+;; concurrently without "database is locked" errors.
 
 ;;; Code:
 
@@ -38,13 +50,55 @@
 (setq patchwork-servers
       '((:url "https://patchwork.ozlabs.org/api" :token nil :projects nil)))
 
-(condition-case err
-    (progn
-      (patchwork-cache-sync)
-      (message "patchwork-cron-sync: sync complete"))
-  (error
-   (message "patchwork-cron-sync: failed: %s" (error-message-string err))))
+;; `command-line-args-left' is not just a read-only view of what's left
+;; on the command line -- it's the actual mutable queue Emacs's own
+;; top-level argument loop keeps popping from once this `-l' script
+;; returns.  It still contains the literal "--" marker at this point
+;; (Emacs only treats "--" as "stop parsing my own options" when its
+;; own loop reaches that position, not before a `-l' script runs), so
+;; read a locally-filtered copy for our own use below rather than
+;; mutating the global -- and once we're done with it, set the global
+;; to nil so Emacs's own loop has nothing left to trip over (otherwise
+;; it resumes past "--" and tries to parse our own arguments, e.g.
+;; "--list-servers", as one of ITS OWN unrecognized options).
+(let ((args (seq-remove (lambda (a) (string= a "--")) command-line-args-left)))
+  (setq command-line-args-left nil)
+  (cond
+   ;; --list-servers: print each configured server's :url, one per line,
+   ;; and exit immediately -- no sync, no db access at all.  This is the
+   ;; single source of truth patchwork-cron-sync-parallel.sh reads from,
+   ;; so the server list is never duplicated between this file and that
+   ;; wrapper script.
+   ((member "--list-servers" args)
+    (dolist (server patchwork-servers)
+      (princ (concat (plist-get server :url) "\n"))))
 
-(patchwork-db-close)
+   ;; A server URL was given: restrict this run to only that one server,
+   ;; so several of these processes (one per server) can run at once
+   ;; instead of one process working through all of them serially.
+   (args
+    (let* ((target-url (car args))
+           (patchwork-servers (seq-filter (lambda (s) (equal (plist-get s :url) target-url))
+                                          patchwork-servers)))
+      (unless patchwork-servers
+        (error "patchwork-cron-sync: no configured server matches %s" target-url))
+      (condition-case err
+          (progn
+            (patchwork-cache-sync)
+            (message "patchwork-cron-sync: sync of %s complete" target-url))
+        (error
+         (message "patchwork-cron-sync: %s failed: %s" target-url (error-message-string err))))
+      (patchwork-db-close)))
+
+   ;; No arguments: sync every configured server serially, exactly as
+   ;; before -- unchanged default behavior for a single cron job.
+   (t
+    (condition-case err
+        (progn
+          (patchwork-cache-sync)
+          (message "patchwork-cron-sync: sync complete"))
+      (error
+       (message "patchwork-cron-sync: failed: %s" (error-message-string err))))
+    (patchwork-db-close))))
 
 ;;; patchwork-cron-sync.el ends here

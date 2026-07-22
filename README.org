@@ -510,8 +510,42 @@ Notes on how this interacts with an interactive session:
   read and write it concurrently without "database is locked" errors.
 - The interactive buffer won't redraw on its own just because the
   cache changed underneath it — you still need ~g~ to re-query and
-  redraw, but that ~g~ will be fast, since the network work was
-  already done by cron.
+  redraw (or ~l~ for a display-only redraw that never touches the
+  network itself, if cron alone is what you want keeping the cache
+  fresh — see the keybinding table above).
+
+** Syncing multiple servers concurrently
+
+The plain crontab entry above syncs every configured server *serially*,
+one after another, in a single Emacs process. A sync's wall-clock time
+is dominated by serialized network round-trips (one HTTP request has
+to finish before the next starts), not by Emacs Lisp itself, so with
+several servers configured this can take meaningfully longer than
+syncing just one. ~patchwork-cron-sync-parallel.sh~ drives
+~patchwork-cron-sync.el~ once per configured server instead, all
+running as separate concurrent processes:
+
+#+begin_src sh
+*/5 * * * * /path/to/patchwel/patchwork-cron-sync-parallel.sh >> ~/.cache/patchwel/sync.log 2>&1
+#+end_src
+
+It reads the server list from ~patchwork-cron-sync.el~ itself (via a
+~--list-servers~ mode that just prints each configured ~:url~ and
+exits — no sync, no db access), so the list is never duplicated
+between the two files; edit ~patchwork-servers~ in
+~patchwork-cron-sync.el~ same as before. The local db's WAL journaling
+and busy timeout (already there for cron-vs-interactive concurrency)
+is exactly what also makes it safe for these several processes to
+write to it at once.
+
+~patchwork-cron-sync.el~ itself still works standalone with a specific
+server URL as its argument (everything after Emacs's own ~--~ marker),
+if you want to drive the per-server parallelism some other way than
+the provided wrapper script:
+
+#+begin_src sh
+emacs --batch -l /path/to/patchwel/patchwork-cron-sync.el -- https://patchwork.ozlabs.org/api
+#+end_src
 
 * Appendix: a minimal mail-sending setup
 
