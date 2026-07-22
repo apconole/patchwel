@@ -4,16 +4,21 @@
 
 ;;; Commentary:
 ;;
-;; Standalone config for `emacs --batch -l patchwork-cron-sync.el', so a
-;; crontab entry can keep the local Patchwork cache warm without an
+;; Standalone entry point for `emacs --batch -l patchwork-cron-sync.el',
+;; so a crontab entry can keep the local Patchwork cache warm without an
 ;; interactive Emacs session open.  Deliberately does NOT load the user's
 ;; normal init file: init files often assume a display, take a while to
 ;; load (package.el bootstrapping, use-package with deferred packages,
-;; etc.), or do things that don't make sense headless.  Instead, this file
-;; is a minimal, self-contained duplicate of just the `patchwork-*'
-;; settings needed for a sync -- keep it in sync with whatever you have in
-;; your real init.el (same `patchwork-servers' etc.), or `load' a config
-;; file that both this script and your init.el share.
+;; etc.), or do things that don't make sense headless.
+;;
+;; This file is pure functional logic ONLY -- it deliberately contains no
+;; server configuration of your own, so `git pull' can always update it
+;; freely.  Your actual `patchwork-servers' (and any other `patchwork-*'
+;; settings) belong in `patchwork-cron-config.el', a sibling file this
+;; script loads that is NOT tracked by git (see .gitignore) -- copy
+;; `patchwork-cron-config.el.example' to that path once and edit your
+;; copy; editing THIS file instead is exactly the mistake that made
+;; every future `git pull' here conflict with your own settings.
 ;;
 ;; Usage, single process, every configured server synced serially (as
 ;; before -- fine for a small number of servers/projects):
@@ -43,12 +48,22 @@
 
 (require 'patchwel)
 
-;; Mirror your interactive `patchwork-servers' (and any other customized
-;; `patchwork-*' variables -- `patchwork-local-db-file', `patchwork-sync-timeout',
-;; `patchwork-sync-lookback-days', etc.) here so this headless run targets
-;; the same cache file and the same servers/projects/tokens.
-(setq patchwork-servers
-      '((:url "https://patchwork.ozlabs.org/api" :token nil :projects nil)))
+;; Your configuration lives in a sibling file this script loads, not in
+;; this one -- see the Commentary above for why.  Its location can be
+;; overridden via $PATCHWORK_CRON_CONFIG, e.g. to keep it in a private
+;; dotfiles repo instead of right next to this script.
+(defvar patchwork-cron-config-file
+  (or (getenv "PATCHWORK_CRON_CONFIG")
+      (expand-file-name "patchwork-cron-config.el" (file-name-directory load-file-name)))
+  "Path to the untracked local configuration file loaded by
+patchwork-cron-sync.el (see its Commentary section).")
+
+(if (file-exists-p patchwork-cron-config-file)
+    (load patchwork-cron-config-file)
+  (error (concat "patchwork-cron-sync: no config file at %s -- copy "
+                 "patchwork-cron-config.el.example there (or point "
+                 "$PATCHWORK_CRON_CONFIG elsewhere) and edit it first")
+         patchwork-cron-config-file))
 
 ;; `command-line-args-left' is not just a read-only view of what's left
 ;; on the command line -- it's the actual mutable queue Emacs's own

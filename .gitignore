@@ -4,3 +4,4 @@
 *.org~
 __pycache__/
 *.pyc
+/patchwork-cron-config.el

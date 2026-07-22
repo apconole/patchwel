@@ -490,17 +490,48 @@ interactive session:
 */5 * * * * /usr/bin/emacs --batch -l /path/to/patchwel/patchwork-cron-sync.el >> ~/.cache/patchwel/sync.log 2>&1
 #+end_src
 
-Before using it:
+Before using it, set up ~patchwork-cron-config.el~ — the file
+~patchwork-cron-sync.el~ loads for its actual ~patchwork-servers~ (and
+any other ~patchwork-*~ settings). It's deliberately *not* tracked by
+git (see ~.gitignore~): ~patchwork-cron-sync.el~ itself contains only
+functional logic and no configuration of your own, so `git pull` can
+always update it freely without ever conflicting with your settings —
+editing ~patchwork-cron-sync.el~ directly is exactly the mistake that
+guarantees a conflict the moment that file changes upstream.
+~patchwork-cron-sync.el~ deliberately does *not* load your normal
+~init.el~ either — init files often assume a display, are slow to
+load, or do things that only make sense interactively.
 
-1. Edit the ~patchwork-servers~ (and any other ~patchwork-*~
-   settings) near the bottom of ~patchwork-cron-sync.el~ to match your
-   real interactive configuration. It deliberately does *not* load your
-   normal ~init.el~ — init files often assume a display, are slow to
-   load, or do things that only make sense interactively — so keep the
-   two configurations in sync by hand, or factor the shared settings
-   into one file both ~load~.
-2. Point the crontab entry at wherever you've actually put the
-   ~patchwel~ source directory and ~patchwork-cron-sync.el~.
+Two ways to set that file up:
+
+- *Generate it from your real interactive config* (recommended, keeps
+  the two in sync automatically instead of by hand): run
+  ~patchwork-generate-cron-config.el~ once, and again any time you
+  change your interactive ~patchwork-servers~ et al. Unlike
+  ~patchwork-cron-sync.el~, this script's whole job *is* to load your
+  init file — that's a cost worth paying for a one-off you run by
+  hand, not a five-minute cron tick.
+  #+begin_src sh
+  emacs --batch -l /path/to/patchwel/patchwork-generate-cron-config.el -- ~/.emacs.d/init.el
+  #+end_src
+  Defaults to `user-init-file` if you omit the path. If your patchwel
+  setup is loaded lazily by a package manager (e.g. ~:defer t~), a
+  plain batch load of your init file may never actually trigger it —
+  the script warns if ~patchwork-servers~ still looks unbound/empty
+  afterward, since the generated file would otherwise end up silently
+  empty.
+- *Or write it by hand*: copy ~patchwork-cron-config.el.example~ to
+  ~patchwork-cron-config.el~ (same directory) and edit that copy
+  directly — simplest if your init file can't run headless at all, at
+  the cost of having to update it yourself when your interactive
+  config changes.
+
+Either way, point the crontab entry at wherever you've actually put
+the ~patchwel~ source directory and ~patchwork-cron-sync.el~. If you'd
+rather keep the generated/hand-written config somewhere else entirely
+(e.g. a private dotfiles repo), point ~$PATCHWORK_CRON_CONFIG~ at it —
+both ~patchwork-cron-sync.el~ and ~patchwork-generate-cron-config.el~
+read/write that same location when it's set.
 
 Notes on how this interacts with an interactive session:
 
@@ -534,12 +565,12 @@ running as separate concurrent processes:
 
 It reads the server list from ~patchwork-cron-sync.el~ itself (via a
 ~--list-servers~ mode that just prints each configured ~:url~ and
-exits — no sync, no db access), so the list is never duplicated
-between the two files; edit ~patchwork-servers~ in
-~patchwork-cron-sync.el~ same as before. The local db's WAL journaling
-and busy timeout (already there for cron-vs-interactive concurrency)
-is exactly what also makes it safe for these several processes to
-write to it at once.
+exits — no sync, no db access), which in turn comes from your own
+~patchwork-cron-config.el~ same as the plain single-process case above
+— nothing extra to configure. The local db's WAL journaling and busy
+timeout (already there for cron-vs-interactive concurrency) is exactly
+what also makes it safe for these several processes to write to it at
+once.
 
 ~patchwork-cron-sync.el~ itself still works standalone with a specific
 server URL as its argument (everything after Emacs's own ~--~ marker),

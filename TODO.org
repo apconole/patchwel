@@ -6,6 +6,63 @@ Tracks high-level features not yet implemented. Each entry is a goal
 and design notes, not a committed implementation plan — flesh out
 further when work actually starts.
 
+* DONE Split cron-sync configuration out of the tracked script
+
+Real design flaw: ~patchwork-cron-sync.el~ is tracked by git, but its
+own Commentary/README instructed users to edit its ~(setq
+patchwork-servers ...)~ block directly to configure it. Any user who
+did that now has an uncommittable local change to a tracked file --
+every future `git pull` touching that file's functional logic (which
+this whole session did repeatedly: --list-servers, single-server
+mode) either silently never reaches them or conflicts outright with
+their own settings, exactly the "mixing functional aspects with
+configuration" problem.
+
+Fixed by splitting the two apart properly: ~patchwork-cron-sync.el~
+now contains only functional logic, no configuration of its own, and
+loads a sibling ~patchwork-cron-config.el~ for `patchwork-servers` and
+friends -- a file that is NOT tracked by git (added to `.gitignore`).
+A new ~patchwork-cron-config.el.example~ (tracked, a template only,
+never itself loaded/executed) is what a user copies to the real,
+gitignored path and edits. The real config's location can also be
+pointed elsewhere entirely via `$PATCHWORK_CRON_CONFIG` (e.g. a private
+dotfiles repo), rather than assuming it always lives next to the
+script. A missing config file errors with a clear, actionable message
+rather than silently syncing zero servers.
+
+Verified: missing-config-file case errors with the expected message;
+a real split config (via $PATCHWORK_CRON_CONFIG, pointed at two live
+mock-server instances) works correctly across all three invocation
+modes (plain, --list-servers, single-server-argument) and the parallel
+wrapper script end-to-end, exactly as before the split.
+
+Follow-up, same problem from a different angle: a hand-copied template
+still has to be kept in sync by hand every time the interactive config
+changes, which is the same class of drift risk one level down. Added
+~patchwork-generate-cron-config.el~, a pure-elisp script (mirrors
+`patchwork-cron-sync.el`'s own `command-line-args-left` handling) that
+loads a given init file (defaulting to `user-init-file`) and dumps the
+current value of every sync-relevant `patchwork-*` variable (an
+explicit fixed list -- deliberately excludes UI-only settings like
+highlighting/buffer names that don't affect what a sync does) into
+`patchwork-cron-config.el` as plain `(setq VAR 'VALUE)` forms. Reuses
+`$PATCHWORK_CRON_CONFIG` symmetrically as the *output* location, same
+variable `patchwork-cron-sync.el` reads its config location from.
+Unlike the sync script, this one's whole point is to load the user's
+real init file -- an acceptable cost for a one-off run by hand, not a
+five-minute cron tick.
+
+Verified: round-trips correctly (a fake init.el with per-server
+`:since-format`/`:sync-timeout`/`:events-omit-project` overrides and a
+customized `patchwork-sync-lookback-days`, loaded back by
+`patchwork-cron-sync.el`, produces the identical values); UI-only
+variables set in the same fake init.el are correctly excluded; an init
+file that errors partway through keeps whatever was set *before* the
+error (not silently reverting to defaults) with a clear warning rather
+than failing outright; a lazily-loaded patchwel setup (nothing actually
+binds `patchwork-servers`) produces a warning instead of a silently
+empty config.
+
 * DONE Compose replies via gnus-msg-mail when Gnus is running
 
 `patchwork-mail-compose-hook' (added earlier so a hand-added Gcc header

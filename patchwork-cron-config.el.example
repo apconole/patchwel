@@ -1,0 +1,20 @@
+;;; patchwork-cron-config.el --- your local cron-sync configuration -*- lexical-binding: t; -*-
+
+;; This file is NOT tracked by git (see .gitignore) -- copy this template
+;; to `patchwork-cron-config.el' (same directory) and edit that copy.
+;; Keeping your actual server list out of any file `git pull` touches is
+;; the whole point: patchwork-cron-sync.el itself only ever contains
+;; functional logic, never your configuration, so future updates to it
+;; never conflict with (or silently overwrite) your local settings.
+;;
+;;   cp patchwork-cron-config.el.example patchwork-cron-config.el
+;;   $EDITOR patchwork-cron-config.el
+
+;; Mirror your interactive `patchwork-servers' (and any other customized
+;; `patchwork-*' variables -- `patchwork-local-db-file', `patchwork-sync-timeout',
+;; `patchwork-sync-lookback-days', etc.) here so this headless run targets
+;; the same cache file and the same servers/projects/tokens.
+(setq patchwork-servers
+      '((:url "https://patchwork.ozlabs.org/api" :token nil :projects nil)))
+
+;;; patchwork-cron-config.el ends here
