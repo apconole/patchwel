@@ -694,6 +694,14 @@ a comment line toggles it open to show the full text."
                         (patchwork-series--format-date (plist-get series :submitted-at))))
         (insert (format "Assignee:    %s\n" (or (plist-get series :assignee) "unassigned")))
         (insert (format "State:       %s\n" (or (plist-get series :state) "")))
+        (when (and (plist-get series :url) (not (string-empty-p (plist-get series :url))))
+          (insert "URL:         ")
+          (insert-text-button
+           (plist-get series :url)
+           'action (lambda (button) (browse-url (button-label button)))
+           'follow-link t
+           'help-echo "mouse-2, RET: browse this series on the web")
+          (insert "\n"))
         (insert (format "Comments:    %d\n" (or (plist-get series :comment-count) 0)))
         (insert (format "Tags:        Ack %d  Review %d  Tested %d  Fixes %d\n"
                         (or (plist-get series :ack-count) 0)

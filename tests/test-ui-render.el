@@ -108,6 +108,50 @@ listing buffer (no sync), run BODY, then kill the buffer."
       (when (get-buffer "*patchwork-series-x-1*")
         (kill-buffer "*patchwork-series-x-1*")))))
 
+(ert-deftest patchwork-ui-test-series-detail-renders-web-url-as-button ()
+  (patchwork-test-with-temp-db
+    (patchwork-db-insert-project "http://x" 1 "Proj" "proj")
+    (patchwork-db-upsert-series
+     (list :server-url "http://x" :id 1 :project-id 1 :project-slug "proj"
+           :name "s" :submitter "Alice" :version 1 :total 1 :submitted-at "2026-01-01"
+           :state "new" :assignee nil :comment-count 0 :ack-count 0 :review-count 0
+           :test-count 0 :fixes-count 0 :check-success 0 :check-warning 0 :check-fail 0
+           :url "http://patchwork.example.com/series/1/" :updated-at "2026-01-01"))
+    (unwind-protect
+        (progn
+          (patchwork-view-series-details "http://x" 1)
+          (with-current-buffer "*patchwork-series-x-1*"
+            (goto-char (point-min))
+            (search-forward "http://patchwork.example.com/series/1/")
+            (backward-char 1)
+            (should (button-at (point)))
+            (should (equal (button-label (button-at (point)))
+                           "http://patchwork.example.com/series/1/"))
+            (let (browsed)
+              (cl-letf (((symbol-function 'browse-url) (lambda (url) (setq browsed url))))
+                (push-button (point)))
+              (should (equal browsed "http://patchwork.example.com/series/1/")))))
+      (when (get-buffer "*patchwork-series-x-1*")
+        (kill-buffer "*patchwork-series-x-1*")))))
+
+(ert-deftest patchwork-ui-test-series-detail-omits-url-line-when-empty ()
+  (patchwork-test-with-temp-db
+    (patchwork-db-insert-project "http://x" 1 "Proj" "proj")
+    (patchwork-db-upsert-series
+     (list :server-url "http://x" :id 1 :project-id 1 :project-slug "proj"
+           :name "s" :submitter "Alice" :version 1 :total 1 :submitted-at "2026-01-01"
+           :state "new" :assignee nil :comment-count 0 :ack-count 0 :review-count 0
+           :test-count 0 :fixes-count 0 :check-success 0 :check-warning 0 :check-fail 0
+           :url "" :updated-at "2026-01-01"))
+    (unwind-protect
+        (progn
+          (patchwork-view-series-details "http://x" 1)
+          (with-current-buffer "*patchwork-series-x-1*"
+            (goto-char (point-min))
+            (should-not (search-forward "URL:" nil t))))
+      (when (get-buffer "*patchwork-series-x-1*")
+        (kill-buffer "*patchwork-series-x-1*")))))
+
 (provide 'test-ui-render)
 
 ;;; test-ui-render.el ends here

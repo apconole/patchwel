@@ -227,7 +227,8 @@ already cached without syncing first — handy if something else (e.g.
 
 ** Keybindings — series detail buffer
 
-A series detail buffer lists its title/author/tags/check counts, then
+A series detail buffer lists its title/author/tags/check counts (its
+web URL too, as a clickable button, when the server reports one), then
 each patch (its commit message and diff, collapsed by default) and
 each patch's comments and CI checks.
 
