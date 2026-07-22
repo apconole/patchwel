@@ -37,6 +37,20 @@ listing buffer (no sync), run BODY, then kill the buffer."
       (should (search-forward "First series" nil t))
       (should (search-forward "Second series" nil t)))))
 
+(ert-deftest patchwork-ui-test-redisplay-never-syncs ()
+  ;; patchwork-series-redisplay must redraw from whatever is already
+  ;; cached and never call patchwork-cache-sync -- the whole point is
+  ;; a way to refresh the buffer that a crontab-driven cache never
+  ;; touches the network for.
+  (patchwork-ui-test--with-seeded-listing
+    (with-current-buffer patchwork-series-buffer-name
+      (should (eq (lookup-key patchwork-series-mode-map "l") #'patchwork-series-redisplay))
+      (cl-letf (((symbol-function 'patchwork-cache-sync)
+                 (lambda (&rest _) (error "should not sync"))))
+        (patchwork-series-redisplay)
+        (goto-char (point-min))
+        (should (search-forward "First series" nil t))))))
+
 (ert-deftest patchwork-ui-test-collapse-then-expand-all ()
   (patchwork-ui-test--with-seeded-listing
     (with-current-buffer patchwork-series-buffer-name

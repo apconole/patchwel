@@ -213,6 +213,7 @@ already cached without syncing first — handy if something else (e.g.
 | ~RET~     | ~patchwork-series-dwim~          | On a group header: toggle it. On a series row: open its detail buffer. |
 | ~TAB~     | ~patchwork-series-dwim~          | Same as ~RET~.                                                |
 | ~g~       | ~patchwork-series-refresh~       | Re-sync. With a prefix argument (~C-u g~), force a full resync (bypassing both the TTL and incremental/events-based sync) rather than the usual incremental sync. |
+| ~l~       | ~patchwork-series-redisplay~     | Redraw from whatever is already cached — never contacts any server, unlike ~g~ (which still checks the TTL). Use this when a crontab (see [[*Background sync via cron][Background sync via cron]]) is already keeping the cache fresh and you just want the buffer to reflect that. |
 | ~G~       | ~patchwork-fetch-series~         | Fetch and cache one specific series by server + id directly, regardless of ~patchwork-sync-lookback-days~, then open its detail buffer. |
 | ~a~       | ~patchwork-series-apply-at-point~ | Apply every patch in the series at point to a git repository, working-tree only (~git apply~, no commits). |
 | ~R~       | ~patchwork-series-review-at-point~ | Apply the series at point as real commits and open a browsable view of them — see [[*Applying a series and starting a review][Applying a series and starting a review]]. |

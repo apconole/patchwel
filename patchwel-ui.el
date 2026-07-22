@@ -391,6 +391,18 @@ coverage instead of waiting for the next periodic full sync."
   (patchwork-cache-sync force)
   (patchwork-series--render))
 
+(defun patchwork-series-redisplay ()
+  "Redraw the series listing buffer from whatever is already cached,
+without contacting any Patchwork server at all -- unlike
+`patchwork-series-refresh' (\\`g'), which always at least checks
+whether a sync is due (subject to `patchwork-cache-ttl').  Useful when
+a separate process (e.g. `patchwork-cron-sync.el' via crontab) is
+already keeping the cache fresh on its own schedule, and you just want
+this buffer to reflect that without the interactive session ever
+touching the network on its own."
+  (interactive)
+  (patchwork-series--render))
+
 (defun patchwork-series-toggle-group (key)
   "Toggle the collapsed/expanded state of the group KEY and redraw."
   (unless patchwork-series--collapsed
@@ -484,6 +496,7 @@ remove that dimension (show every value for it)."
     (define-key map (kbd "RET") #'patchwork-series-dwim)
     (define-key map (kbd "TAB") #'patchwork-series-dwim)
     (define-key map "g" #'patchwork-series-refresh)
+    (define-key map "l" #'patchwork-series-redisplay)
     (define-key map "G" #'patchwork-fetch-series)
     (define-key map "a" #'patchwork-series-apply-at-point)
     (define-key map "R" #'patchwork-series-review-at-point)
