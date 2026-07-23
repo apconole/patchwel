@@ -260,6 +260,45 @@ form the server actually expects. Conflict *detection* still works
 correctly regardless, since both sides of that comparison are
 consistently display names.
 
+* DONE Per-patch and per-series notes
+
+Free-text notes on a patch or series, local to patchwel -- not sent to
+the server, not tied to a mail draft -- for tracking review state
+across a back-and-forth (e.g. "still waiting on CI", "asked for X, not
+yet addressed") right next to the series/patch it's about. A new
+~notes~ sqlite table (~server_url~, ~target_type~ -- "patch" or
+"series" -- ~target_id~, ~content~), deliberately excluded from
+~patchwork-db-init~'s drop-and-recreate list alongside ~checks~ and
+~pending_changes~: a note is hand-authored content with no server to
+re-fetch it from.
+
+Edited in a dedicated buffer (~patchwork-notes-edit-mode~, derived from
+~text-mode~) rather than a single-line prompt, since a note tracking
+several rounds of review needs more than one line -- ~C-c C-c~ saves
+and closes, ~C-c C-k~ discards and closes. Saving blank content deletes
+the note (~patchwork-db-set-note~), so there's no separate delete
+command.
+
+Wired to keybindings: ~e~ in the listing buffer edits the series at
+point's note; ~e~/~E~ in a detail buffer edit the patch at point's /
+the whole series' note regardless of point. Shown wherever a
+patch/series already renders: a compact ~*~ marker in the listing
+buffer's new ~Nt~ column (no room there for the text itself) and on
+each noted patch's summary line in the detail buffer, full text in a
+~Notes:~ block (series) or ~--- Note ---~ block (patch, once
+expanded). ~patchwork-db-purge-project~ also purges notes for whatever
+it purges. See README.org's "Taking notes on a patch or series"
+section.
+
+Explicitly considered and rejected: carrying a note forward across
+series versions (v1 -> v2 -> v3), so old review feedback stays visible
+next to the new version and it's clear whether it was actually
+addressed. Patch/series ids are new every version, and an old version
+can already have aged out of the local cache by the time a new one
+arrives -- exactly when the carry-over would matter most -- so this
+would be unreliable in precisely the cases it's meant to help with.
+Scope is deliberately just a note on the *current* cached id.
+
 * DONE Per-series sync from the series detail buffer
 
 ~M-x patchwork-fetch-series~ (~G~ in the main listing buffer) prompts

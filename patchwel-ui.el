@@ -181,15 +181,15 @@ change at runtime with `patchwork-series-set-filter' or
 
 (defconst patchwork-series--column-formats
   '("%-6s" "%-34.34s" "%-14.14s" "%-10s" "%5s" "%4s" "%4s" "%5s" "%4s"
-    "%5s" "%5s" "%5s" "%-14.14s" "%-18.18s")
+    "%5s" "%5s" "%5s" "%3s" "%-14.14s" "%-18.18s")
   "Per-column format specs, in order, shared by
 `patchwork-series--header-row-string' and `patchwork-series--row-string'
 so their widths can never drift apart.  Columns: id, title, author,
 submitted, comments, ack, review, test, fixes, check-success,
-check-warning, check-fail, assignee, state.  Server and project aren't
-columns here since each group's header line already names them once
-for every series underneath it.  Assignee/state are a bit wider than
-the values themselves strictly need, leaving headroom for the `*'
+check-warning, check-fail, note, assignee, state.  Server and project
+aren't columns here since each group's header line already names them
+once for every series underneath it.  Assignee/state are a bit wider
+than the values themselves strictly need, leaving headroom for the `*'
 pending-change marker appended by `patchwork-series--row-string'.")
 
 (defun patchwork-series--format-columns (values &optional faces)
@@ -212,7 +212,14 @@ formatted column individually."
   "Return the column header line."
   (patchwork-series--format-columns
    '("ID" "Title" "Author" "Submitted" "Cmts" "Ack" "Rev" "Test" "Fix"
-     "Succ" "Warn" "Fail" "Assignee" "State")))
+     "Succ" "Warn" "Fail" "Nt" "Assignee" "State")))
+
+(defun patchwork-series--note-marker (series)
+  "Return a compact `*' marker if SERIES has a note, else \"\" --
+see `patchwork-db-get-note'."
+  (if (patchwork-db-get-note (plist-get series :server-url) "series" (plist-get series :id))
+      "*"
+    ""))
 
 (defun patchwork-series--pending-marker (series field)
   "Return a compact `*' marker if any patch in SERIES has a queued
@@ -235,7 +242,9 @@ layered over the whole row (filling in gaps left by the per-column
 faces, via `add-face-text-property' with APPEND so it doesn't clobber
 them).  A trailing `*' on the assignee or state column means at least
 one patch in the series has a queued offline change to that field not
-yet applied -- see `patchwork-series--pending-marker'."
+yet applied -- see `patchwork-series--pending-marker'.  A `*' in the
+`Nt' column means the series has a note attached -- see
+`patchwork-series--note-marker'."
   (let* ((row (patchwork-series--format-columns
                (list (plist-get series :id)
                      (or (plist-get series :name) "")
@@ -249,12 +258,13 @@ yet applied -- see `patchwork-series--pending-marker'."
                      (or (plist-get series :check-success) 0)
                      (or (plist-get series :check-warning) 0)
                      (or (plist-get series :check-fail) 0)
+                     (patchwork-series--note-marker series)
                      (concat (or (plist-get series :assignee) "")
                              (patchwork-series--pending-marker series "delegate"))
                      (concat (or (plist-get series :state) "")
                              (patchwork-series--pending-marker series "state")))
                (list nil 'patchwork-series-title-face nil 'patchwork-series-date-face
-                     nil nil nil nil nil nil nil nil nil nil)))
+                     nil nil nil nil nil nil nil nil nil nil nil)))
          (row-face (patchwork-series--row-face series)))
     (when row-face
       (add-face-text-property 0 (length row) row-face t row))
@@ -430,6 +440,88 @@ touching the network on its own."
     (puthash key t patchwork-series--collapsed))
   (patchwork-series--render))
 
+;; -- editing notes ----------------------------------------------------------
+
+(defvar-local patchwork-notes-edit--server-url nil
+  "Server URL the note being edited in this buffer belongs to.")
+
+(defvar-local patchwork-notes-edit--target-type nil
+  "\"patch\" or \"series\" -- what the note being edited in this buffer is for.")
+
+(defvar-local patchwork-notes-edit--target-id nil
+  "Patch or series id the note being edited in this buffer is for.")
+
+(defvar-local patchwork-notes-edit--refresh-fn nil
+  "Zero-arg function called after this buffer's note is saved, to redraw
+whatever listing/detail buffer should now reflect it.  Expected to wrap
+its own `with-current-buffer' around a captured buffer object (not a
+name) internally, since this runs after the note-edit buffer itself has
+already been killed.")
+
+(defun patchwork-notes-edit-save ()
+  "Save this buffer's content as the note being edited, then close it.
+Saving blank content deletes the note -- see `patchwork-db-set-note'."
+  (interactive)
+  (let ((content (string-trim (buffer-string)))
+        (server-url patchwork-notes-edit--server-url)
+        (target-type patchwork-notes-edit--target-type)
+        (target-id patchwork-notes-edit--target-id)
+        (refresh-fn patchwork-notes-edit--refresh-fn))
+    (patchwork-db-set-note server-url target-type target-id content)
+    (kill-buffer)
+    (when refresh-fn (funcall refresh-fn))
+    (message "Note saved.")))
+
+(defun patchwork-notes-edit-cancel ()
+  "Close this note-editing buffer without saving anything."
+  (interactive)
+  (kill-buffer)
+  (message "Note editing cancelled; nothing saved."))
+
+(defvar patchwork-notes-edit-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") #'patchwork-notes-edit-save)
+    (define-key map (kbd "C-c C-k") #'patchwork-notes-edit-cancel)
+    map)
+  "Keymap for `patchwork-notes-edit-mode'.
+C-c C-c saves and closes; C-c C-k discards and closes.")
+
+(define-derived-mode patchwork-notes-edit-mode text-mode "Patchwork-Note"
+  "Major mode for editing a patchwel note on a patch or series.
+\\{patchwork-notes-edit-mode-map}")
+
+(defun patchwork-notes--edit (server-url target-type target-id label refresh-fn)
+  "Pop up a buffer to edit the note for TARGET-TYPE (\"patch\" or
+\"series\") and TARGET-ID on SERVER-URL, pre-filled with its current
+content if any.  LABEL names the buffer; REFRESH-FN is called (with no
+arguments) after a save -- see `patchwork-notes-edit--refresh-fn'."
+  (let ((buffer (get-buffer-create (format "*patchwork-note: %s*" label)))
+        (current (or (patchwork-db-get-note server-url target-type target-id) "")))
+    (with-current-buffer buffer
+      (erase-buffer)
+      (insert current)
+      (patchwork-notes-edit-mode)
+      (setq patchwork-notes-edit--server-url server-url)
+      (setq patchwork-notes-edit--target-type target-type)
+      (setq patchwork-notes-edit--target-id target-id)
+      (setq patchwork-notes-edit--refresh-fn refresh-fn)
+      (goto-char (point-max)))
+    (switch-to-buffer buffer)))
+
+(defun patchwork-series-edit-note-at-point ()
+  "Edit the note for the series at point, in a dedicated buffer
+\(`C-c C-c' to save, `C-c C-k' to cancel)."
+  (interactive)
+  (let ((entry (patchwork-series-at-point))
+        (listing-buffer (current-buffer)))
+    (if (not entry)
+        (message "No series on this line")
+      (patchwork-notes--edit
+       (car entry) "series" (cdr entry) (format "series %s" (cdr entry))
+       (lambda ()
+         (when (buffer-live-p listing-buffer)
+           (with-current-buffer listing-buffer (patchwork-series--render))))))))
+
 (defun patchwork-series-purge-group-at-point ()
   "Purge every cached series/patch/comment/check/queued-change for the
 server+project group header at point -- e.g. to clean up a project
@@ -569,6 +661,7 @@ remove that dimension (show every value for it)."
     (define-key map "R" #'patchwork-series-review-at-point)
     (define-key map "s" #'patchwork-series-set-state-at-point)
     (define-key map "d" #'patchwork-series-set-delegate-at-point)
+    (define-key map "e" #'patchwork-series-edit-note-at-point)
     (define-key map "k" #'patchwork-series-purge-group-at-point)
     (define-key map "f" #'patchwork-series-set-filter)
     (define-key map "F" #'patchwork-series-reset-filter)
@@ -584,8 +677,9 @@ remove that dimension (show every value for it)."
 n/p move to the next/previous series row; N/P move to the next/
 previous server, skipping over any remaining project groups under the
 current one; s/d bulk-set the state/delegate of every patch in the
-series at point; k, on a group header, purges all cached data for
-that server+project after confirming.")
+series at point; e edits the series' note in a dedicated buffer; k, on
+a group header, purges all cached data for that server+project after
+confirming.")
 
 (define-derived-mode patchwork-series-mode special-mode "Patchwork-Series"
   "Major mode listing cached Patchwork series, grouped by server and
@@ -806,6 +900,11 @@ a comment line toggles it open to show the full text."
                         (or (plist-get series :check-success) 0)
                         (or (plist-get series :check-warning) 0)
                         (or (plist-get series :check-fail) 0)))
+        (let ((note (patchwork-db-get-note server-url "series" series-id)))
+          (when note
+            (insert "Notes:\n")
+            (dolist (line (split-string note "\n"))
+              (insert (format "  %s\n" line)))))
         (insert "\n--- Patches ---\n")
         (dolist (patch patches)
           (let* ((patch-id (plist-get patch :id))
@@ -820,14 +919,16 @@ a comment line toggles it open to show the full text."
                                   (format " (delegate: %s)"
                                           (patchwork-series-detail--with-pending
                                            (or (plist-get patch :delegate) "unassigned")
-                                           delegate-pending)))))
+                                           delegate-pending))))
+                 (note (patchwork-db-get-note server-url "patch" patch-id)))
             (insert (propertize
-                     (format "%s %3d. #%-8d [%s]%s %s\n"
+                     (format "%s %3d. #%-8d [%s]%s%s %s\n"
                              (if expanded "[-]" "[+]")
                              (or (plist-get patch :series-position) 0)
                              patch-id
                              state-display
                              (or delegate-text "")
+                             (if note " [note]" "")
                              (or (plist-get patch :name) ""))
                      'patchwork-patch-id patch-id
                      'face 'patchwork-patch-line-face))
@@ -863,6 +964,10 @@ a comment line toggles it open to show the full text."
                          'follow-link t
                          'help-echo "mouse-2, RET: browse this check's report")
                         (insert "\n")))))
+                (when note
+                  (insert "     --- Note ---\n")
+                  (dolist (line (split-string note "\n"))
+                    (insert (format "     %s\n" line))))
                 (insert "\n"))))
           (dolist (comment (patchwork-db-get-comments server-url (plist-get patch :id)))
             (let* ((comment-id (plist-get comment :id))
@@ -986,6 +1091,33 @@ patch-at-point version and `patchwork-cache-set-series-delegate'."
       (patchwork-cache-set-series-delegate server patchwork-series-detail--id new-delegate)
       (patchwork-series-detail-refresh))))
 
+(defun patchwork-series-detail-edit-note-at-point ()
+  "Edit the note for the patch at point, in a dedicated buffer
+\(`C-c C-c' to save, `C-c C-k' to cancel)."
+  (interactive)
+  (let ((patch-id (patchwork-series-detail--patch-at-point))
+        (detail-buffer (current-buffer)))
+    (if (not patch-id)
+        (message "No patch on this line")
+      (patchwork-notes--edit
+       patchwork-series-detail--server-url "patch" patch-id (format "patch %s" patch-id)
+       (lambda ()
+         (when (buffer-live-p detail-buffer)
+           (with-current-buffer detail-buffer (patchwork-series-detail-refresh))))))))
+
+(defun patchwork-series-detail-edit-series-note ()
+  "Edit the note for the series shown in this buffer, regardless of
+point, in a dedicated buffer (`C-c C-c' to save, `C-c C-k' to cancel)."
+  (interactive)
+  (when patchwork-series-detail--id
+    (let ((detail-buffer (current-buffer)))
+      (patchwork-notes--edit
+       patchwork-series-detail--server-url "series" patchwork-series-detail--id
+       (format "series %s" patchwork-series-detail--id)
+       (lambda ()
+         (when (buffer-live-p detail-buffer)
+           (with-current-buffer detail-buffer (patchwork-series-detail-refresh))))))))
+
 (defun patchwork-series-detail-expand-all ()
   "Expand every patch and comment in this series detail buffer."
   (interactive)
@@ -1020,6 +1152,8 @@ patch-at-point version and `patchwork-cache-set-series-delegate'."
     (define-key map "d" #'patchwork-series-detail-set-delegate-at-point)
     (define-key map "S" #'patchwork-series-detail-set-series-state)
     (define-key map "D" #'patchwork-series-detail-set-series-delegate)
+    (define-key map "e" #'patchwork-series-detail-edit-note-at-point)
+    (define-key map "E" #'patchwork-series-detail-edit-series-note)
     (define-key map "n" #'patchwork-series-detail-next-patch)
     (define-key map "p" #'patchwork-series-detail-prev-patch)
     (define-key map "N" #'patchwork-series-detail-next-comment)
@@ -1032,7 +1166,8 @@ patch-at-point version and `patchwork-cache-set-series-delegate'."
 n/p move to the next/previous patch; N/P move to the next/previous
 comment; +/- expand/collapse everything in this buffer; s/d set the
 state/delegate of the patch at point; S/D bulk-set the state/delegate
-of every patch in the whole series, regardless of point.")
+of every patch in the whole series, regardless of point; e/E edit the
+note for the patch at point / the whole series, in a dedicated buffer.")
 
 (define-derived-mode patchwork-series-detail-mode special-mode "Patchwork-Series-Detail"
   "Major mode for viewing details of a single Patchwork series.")

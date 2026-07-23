@@ -1,0 +1,3 @@
+test: bash "$TMT_TREE/tests/run-ert.sh" "$TMT_TREE/tests/test-notes.el"
+summary: Per-patch and per-series notes - edit-buffer save/cancel workflow
+tag: [notes]

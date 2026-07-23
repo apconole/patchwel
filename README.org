@@ -219,6 +219,7 @@ already cached without syncing first — handy if something else (e.g.
 | ~R~       | ~patchwork-series-review-at-point~ | Apply the series at point as real commits and open a browsable view of them — see [[*Applying a series and starting a review][Applying a series and starting a review]]. |
 | ~s~       | ~patchwork-series-set-state-at-point~ | Bulk-set the state of every patch in the series at point — see [[*Setting patch/series state and delegate][Setting patch/series state and delegate]]. |
 | ~d~       | ~patchwork-series-set-delegate-at-point~ | Bulk-set the delegate of every patch in the series at point.  |
+| ~e~       | ~patchwork-series-edit-note-at-point~ | Edit the note for the series at point, in a dedicated buffer — see [[*Taking notes on a patch or series][Taking notes on a patch or series]]. |
 | ~k~       | ~patchwork-series-purge-group-at-point~ | On a group header: purge every cached series/patch/comment/check/queued change for that server+project, after confirming — see [[*Purging a project's cached data][Purging a project's cached data]]. |
 | ~n~/~p~   | ~patchwork-series-next~/~-prev~  | Move to the next/previous series row.                         |
 | ~N~/~P~   | ~patchwork-series-next-server~/~-prev-server~ | Move to the next/previous server, skipping over any remaining project groups under the current one. |
@@ -247,6 +248,8 @@ each patch's comments and CI checks.
 | ~d~     | ~patchwork-series-detail-set-delegate-at-point~ | Set the delegate of the patch at point.                |
 | ~S~     | ~patchwork-series-detail-set-series-state~ | Bulk-set the state of every patch in this series, regardless of point. |
 | ~D~     | ~patchwork-series-detail-set-series-delegate~ | Bulk-set the delegate of every patch in this series, regardless of point. |
+| ~e~     | ~patchwork-series-detail-edit-note-at-point~ | Edit the note for the patch at point, in a dedicated buffer — see [[*Taking notes on a patch or series][Taking notes on a patch or series]]. |
+| ~E~     | ~patchwork-series-detail-edit-series-note~ | Edit the note for the whole series, regardless of point.  |
 | ~n~/~p~ | ~patchwork-series-detail-next-patch~/~-prev-patch~ | Move to the next/previous patch's summary line, regardless of expand state. |
 | ~N~/~P~ | ~patchwork-series-detail-next-comment~/~-prev-comment~ | Move to the next/previous comment's summary line. |
 | ~+~     | ~patchwork-series-detail-expand-all~ | Expand every patch and comment in this buffer.            |
@@ -291,6 +294,37 @@ Note: the locally cached delegate is a resolved display name, but
 Patchwork's write API expects a delegate user id or username (which
 varies by deployment) — there's no name-to-id lookup here, so type
 whatever your server's API actually expects when prompted.
+
+** Taking notes on a patch or series
+
+~e~ edits the note for the series at point in the listing buffer, or
+the patch at point in a detail buffer; ~E~ in a detail buffer edits the
+note for the whole series shown there, regardless of point. Each opens
+a dedicated buffer, pre-filled with the existing note if any —
+~C-c C-c~ saves and closes it, ~C-c C-k~ discards any changes and
+closes it without saving. Saving blank (or whitespace-only) content
+deletes the note; there's no separate delete command.
+
+A note is local to patchwel, not sent to the Patchwork server or tied
+to a mail draft — it's for tracking your own review state (e.g. "still
+waiting on CI", "asked for X, not yet addressed") right next to the
+series/patch it's about, distinct from composing an actual reply
+(see [[*Replying to comments and patches][Replying to comments and patches]]).
+
+Wherever a patch or series already renders, a note shows alongside it:
+the listing buffer's ~Nt~ column shows a compact ~*~ marker when a
+series has a note (there isn't room there for the text itself); the
+series detail buffer shows the full text in a ~Notes:~ block for the
+series, and a ~ [note]~ marker on any patch with one, in full under a
+~--- Note ---~ block once that patch is expanded.
+
+Note: a note is tied to the *current* cached patch/series id, which is
+new every version of a series (v1, v2, v3, ...) — it does not carry
+forward automatically when a new version arrives. This was a
+deliberate scope decision, not an oversight: an old version can already
+have aged out of the local cache by the time a new one shows up, which
+would make any such carry-over unreliable exactly when it would matter
+most.
 
 ** Fetching a specific series by id
 
@@ -477,10 +511,10 @@ other project or server's data, use
 project slug (completing against whatever's actually cached for that
 server), reports how many series and patches would be removed, asks
 for confirmation, then deletes them along with any queued pending
-change and the project's own row. Scoped by the cached series' own
-project slug, so it also cleans up correctly even if the project was
-queried directly and never got its own row in the local ~projects~
-table.
+change, any notes on those patches/series, and the project's own row.
+Scoped by the cached series' own project slug, so it also cleans up
+correctly even if the project was queried directly and never got its
+own row in the local ~projects~ table.
 
 From the listing buffer, ~k~ on a server+project group header
 (~patchwork-series-purge-group-at-point~) does the same thing without

@@ -265,6 +265,78 @@ listing buffer (no sync), run BODY, then kill the buffer."
       (when (get-buffer "*patchwork-series-x-1*")
         (kill-buffer "*patchwork-series-x-1*")))))
 
+(ert-deftest patchwork-ui-test-notes-keybindings-resolve ()
+  (patchwork-ui-test--with-seeded-listing
+    (with-current-buffer patchwork-series-buffer-name
+      (should (eq (lookup-key patchwork-series-mode-map "e") #'patchwork-series-edit-note-at-point))))
+  (should (eq (lookup-key patchwork-series-detail-mode-map "e")
+              #'patchwork-series-detail-edit-note-at-point))
+  (should (eq (lookup-key patchwork-series-detail-mode-map "E")
+              #'patchwork-series-detail-edit-series-note)))
+
+(ert-deftest patchwork-ui-test-listing-note-marker-shown-iff-note-present ()
+  (patchwork-ui-test--with-seeded-listing
+    (with-current-buffer patchwork-series-buffer-name
+      (goto-char (point-min))
+      (should-not (search-forward "  *  " nil t)))
+    (patchwork-db-set-note "http://x" "series" 1001 "a note")
+    (with-current-buffer patchwork-series-buffer-name
+      (patchwork-series--render)
+      (goto-char (point-min))
+      (should (search-forward "  *  " nil t)))))
+
+(ert-deftest patchwork-ui-test-detail-notes-block-shown-iff-series-has-note ()
+  (patchwork-test-with-temp-db
+    (patchwork-db-insert-project "http://x" 1 "Proj" "proj")
+    (patchwork-db-upsert-series
+     (list :server-url "http://x" :id 1 :project-id 1 :project-slug "proj"
+           :name "s" :submitter "Alice" :version 1 :total 1 :submitted-at "2026-01-01"
+           :state "new" :assignee nil :comment-count 0 :ack-count 0 :review-count 0
+           :test-count 0 :fixes-count 0 :check-success 0 :check-warning 0 :check-fail 0
+           :url "" :updated-at "2026-01-01"))
+    (unwind-protect
+        (progn
+          (patchwork-view-series-details "http://x" 1)
+          (with-current-buffer "*patchwork-series-x-1*"
+            (goto-char (point-min))
+            (should-not (search-forward "Notes:" nil t)))
+          (patchwork-db-set-note "http://x" "series" 1 "line one\nline two")
+          (patchwork-view-series-details "http://x" 1)
+          (with-current-buffer "*patchwork-series-x-1*"
+            (goto-char (point-min))
+            (should (search-forward "Notes:\n  line one\n  line two" nil t))))
+      (when (get-buffer "*patchwork-series-x-1*")
+        (kill-buffer "*patchwork-series-x-1*")))))
+
+(ert-deftest patchwork-ui-test-detail-patch-note-marker-and-expanded-text ()
+  (patchwork-test-with-temp-db
+    (patchwork-db-insert-project "http://x" 1 "Proj" "proj")
+    (patchwork-db-upsert-series
+     (list :server-url "http://x" :id 1 :project-id 1 :project-slug "proj"
+           :name "s" :submitter "Alice" :version 1 :total 1 :submitted-at "2026-01-01"
+           :state "new" :assignee nil :comment-count 0 :ack-count 0 :review-count 0
+           :test-count 0 :fixes-count 0 :check-success 0 :check-warning 0 :check-fail 0
+           :url "" :updated-at "2026-01-01"))
+    (patchwork-db-insert-patch
+     (list :server-url "http://x" :id 100 :series-id 1 :project-id 1 :state "new"
+           :submitter "Alice" :delegate nil :name "a patch" :date "2026-01-01"
+           :series-position 1 :check-state "success" :updated-at "2026-01-01"))
+    (patchwork-db-set-note "http://x" "patch" 100 "watch out for X")
+    (unwind-protect
+        (progn
+          (patchwork-view-series-details "http://x" 1)
+          (with-current-buffer "*patchwork-series-x-1*"
+            (goto-char (point-min))
+            (should (search-forward "[note]" nil t))
+            (goto-char (point-min))
+            (should-not (search-forward "--- Note ---" nil t))
+            (patchwork-series-detail-expand-all)
+            (goto-char (point-min))
+            (should (search-forward "--- Note ---" nil t))
+            (should (search-forward "watch out for X" nil t))))
+      (when (get-buffer "*patchwork-series-x-1*")
+        (kill-buffer "*patchwork-series-x-1*")))))
+
 (provide 'test-ui-render)
 
 ;;; test-ui-render.el ends here

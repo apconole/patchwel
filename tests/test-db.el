@@ -189,6 +189,10 @@
      (list :server-url "http://x" :id 6000 :patch-id 2000 :reporter "ci" :state "success"
            :context "b" :description "d" :date "2026-01-01"))
     (patchwork-db-queue-pending-change "http://x" 2000 "state" "accepted" "new")
+    (patchwork-db-set-note "http://x" "patch" 1000 "good note")
+    (patchwork-db-set-note "http://x" "series" 100 "good series note")
+    (patchwork-db-set-note "http://x" "patch" 2000 "bad note")
+    (patchwork-db-set-note "http://x" "series" 200 "bad series note")
     (patchwork-db-purge-project "http://x" "bad")
     (should (patchwork-db-get-series "http://x" 100))
     (should (patchwork-db-get-patch "http://x" 1000))
@@ -199,7 +203,48 @@
     (should-not (patchwork-db-get-pending-change "http://x" 2000 "state"))
     (should (null (sqlite-select (patchwork-db-connection)
                                   "SELECT 1 FROM projects WHERE server_url = ? AND slug = ?"
-                                  '("http://x" "bad"))))))
+                                  '("http://x" "bad"))))
+    ;; untouched project's notes survive; purged project's notes are gone
+    (should (equal (patchwork-db-get-note "http://x" "patch" 1000) "good note"))
+    (should (equal (patchwork-db-get-note "http://x" "series" 100) "good series note"))
+    (should-not (patchwork-db-get-note "http://x" "patch" 2000))
+    (should-not (patchwork-db-get-note "http://x" "series" 200))))
+
+(ert-deftest patchwork-db-test-note-crud ()
+  (patchwork-test-with-temp-db
+    (should-not (patchwork-db-get-note "http://x" "patch" 100))
+    (patchwork-db-set-note "http://x" "patch" 100 "line one\nline two")
+    (should (equal (patchwork-db-get-note "http://x" "patch" 100) "line one\nline two"))
+    ;; overwrite
+    (patchwork-db-set-note "http://x" "patch" 100 "updated")
+    (should (equal (patchwork-db-get-note "http://x" "patch" 100) "updated"))
+    ;; a series note with the same target-id is tracked independently
+    (patchwork-db-set-note "http://x" "series" 100 "series note")
+    (should (equal (patchwork-db-get-note "http://x" "series" 100) "series note"))
+    (should (equal (patchwork-db-get-note "http://x" "patch" 100) "updated"))
+    (patchwork-db-delete-note "http://x" "patch" 100)
+    (should-not (patchwork-db-get-note "http://x" "patch" 100))
+    (should (patchwork-db-get-note "http://x" "series" 100))))
+
+(ert-deftest patchwork-db-test-note-blank-content-deletes ()
+  (patchwork-test-with-temp-db
+    (patchwork-db-set-note "http://x" "patch" 100 "something")
+    (should (patchwork-db-get-note "http://x" "patch" 100))
+    (patchwork-db-set-note "http://x" "patch" 100 "   \n  ")
+    (should-not (patchwork-db-get-note "http://x" "patch" 100))
+    (patchwork-db-set-note "http://x" "patch" 100 "something else")
+    (patchwork-db-set-note "http://x" "patch" 100 nil)
+    (should-not (patchwork-db-get-note "http://x" "patch" 100))))
+
+(ert-deftest patchwork-db-test-note-survives-schema-migration ()
+  ;; notes is deliberately excluded from patchwork-db-init's
+  ;; drop-and-recreate list, since it holds hand-authored content that
+  ;; can't be re-fetched from the server.
+  (patchwork-test-with-temp-db
+    (patchwork-db-set-note "http://x" "patch" 100 "a note worth keeping")
+    (sqlite-execute (patchwork-db-connection) "PRAGMA user_version = 0")
+    (patchwork-db-init (patchwork-db-connection))
+    (should (equal (patchwork-db-get-note "http://x" "patch" 100) "a note worth keeping"))))
 
 (ert-deftest patchwork-db-test-purge-project-noop-when-nothing-cached ()
   (patchwork-test-with-temp-db

@@ -10,11 +10,11 @@
 (defvar patchwork-db--connection nil
   "Cached connection to the local Patchwork SQLite database.")
 
-(defconst patchwork-db-schema-version 7
+(defconst patchwork-db-schema-version 8
   "Bump whenever `patchwork-db-schema' changes shape.
 A mismatch causes the local cache tables to be dropped and recreated,
 since the database only ever holds re-fetchable cache data -- with the
-deliberate exception of `checks' and `pending_changes' (see
+deliberate exception of `checks', `pending_changes', and `notes' (see
 `patchwork-db-init'), which are not.")
 
 (defconst patchwork-db-schema
@@ -110,6 +110,13 @@ deliberate exception of `checks' and `pending_changes' (see
        observed_value TEXT,
        queued_at TEXT,
        PRIMARY KEY (server_url, patch_id, field))"
+    "CREATE TABLE IF NOT EXISTS notes (
+       server_url TEXT NOT NULL,
+       target_type TEXT NOT NULL,
+       target_id INTEGER NOT NULL,
+       content TEXT,
+       updated_at TEXT,
+       PRIMARY KEY (server_url, target_type, target_id))"
     "CREATE INDEX IF NOT EXISTS idx_patches_series ON patches(server_url, series_id)"
     "CREATE INDEX IF NOT EXISTS idx_patches_project ON patches(server_url, project_id)"
     "CREATE INDEX IF NOT EXISTS idx_series_project ON series(server_url, project_slug)"
@@ -133,10 +140,11 @@ interactive Emacs session can read and write concurrently without
 
 (defun patchwork-db-init (&optional db)
   "Create the local cache schema in DB, migrating if the schema is outdated.
-`checks' and `pending_changes' are deliberately never in the drop list
-below: unlike the rest of the cache, `pending_changes' holds state that
-cannot be re-fetched from the server (a queued offline change), so an
-unrelated future schema bump must not silently discard it."
+`checks', `pending_changes', and `notes' are deliberately never in the
+drop list below: unlike the rest of the cache, they hold state that
+cannot be re-fetched from the server (a queued offline change, or a
+hand-authored note), so an unrelated future schema bump must not
+silently discard them."
   (let* ((db (or db (patchwork-db-connection)))
          (version (or (caar (sqlite-select db "PRAGMA user_version")) 0)))
     (when (< version patchwork-db-schema-version)
@@ -543,6 +551,38 @@ request for the same patch+field replaces the older queued one."
    "DELETE FROM pending_changes WHERE server_url = ? AND patch_id = ? AND field = ?"
    (list server-url patch-id field)))
 
+;; -- notes ----------------------------------------------------------------
+
+(defun patchwork-db-set-note (server-url target-type target-id content)
+  "Set the note for TARGET-TYPE (a string, \"patch\" or \"series\") and
+TARGET-ID on SERVER-URL to CONTENT.  If CONTENT is nil or blank
+\(`string-blank-p'\), the note is deleted instead of storing an empty
+row -- this is also how a note gets removed, there is no separate
+delete keybinding."
+  (if (or (null content) (string-blank-p content))
+      (patchwork-db-delete-note server-url target-type target-id)
+    (sqlite-execute
+     (patchwork-db-connection)
+     "INSERT INTO notes (server_url, target_type, target_id, content, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(server_url, target_type, target_id) DO UPDATE SET
+        content = excluded.content, updated_at = excluded.updated_at"
+     (list server-url target-type target-id content (current-time-string)))))
+
+(defun patchwork-db-get-note (server-url target-type target-id)
+  "Return the note content for TARGET-TYPE/TARGET-ID on SERVER-URL, or nil."
+  (caar (sqlite-select
+         (patchwork-db-connection)
+         "SELECT content FROM notes WHERE server_url = ? AND target_type = ? AND target_id = ?"
+         (list server-url target-type target-id))))
+
+(defun patchwork-db-delete-note (server-url target-type target-id)
+  "Delete the note for TARGET-TYPE/TARGET-ID on SERVER-URL, if any."
+  (sqlite-execute
+   (patchwork-db-connection)
+   "DELETE FROM notes WHERE server_url = ? AND target_type = ? AND target_id = ?"
+   (list server-url target-type target-id)))
+
 ;; -- purging a project's cached data -------------------------------------
 
 (defun patchwork-db--cached-project-slugs (server-url)
@@ -555,14 +595,14 @@ request for the same patch+field replaces the older queued one."
            (list server-url))))
 
 (defun patchwork-db-purge-project (server-url project-slug)
-  "Delete every cached series, patch, comment, check, and queued
-pending change for PROJECT-SLUG on SERVER-URL, plus its own `projects'
-row -- e.g. to clean up a project that got polled by mistake (a
-misconfigured sync) without disturbing any other server or project's
-cached data.  Scoped via `series.project_slug' (not `projects.id'), so
-this also cleans up data cached for a project that was queried
-directly and never got its own `projects' row.  Prompts for
-confirmation, reporting how many series/patches would be removed,
+  "Delete every cached series, patch, comment, check, queued pending
+change, and note for PROJECT-SLUG on SERVER-URL, plus its own
+`projects' row -- e.g. to clean up a project that got polled by
+mistake (a misconfigured sync) without disturbing any other server or
+project's cached data.  Scoped via `series.project_slug' (not
+`projects.id'), so this also cleans up data cached for a project that
+was queried directly and never got its own `projects' row.  Prompts
+for confirmation, reporting how many series/patches would be removed,
 before deleting anything."
   (interactive
    (let* ((server-url (completing-read
@@ -597,7 +637,10 @@ before deleting anything."
           (sqlite-execute db "DELETE FROM checks WHERE server_url = ? AND patch_id = ?"
                            (list server-url pid))
           (sqlite-execute db "DELETE FROM pending_changes WHERE server_url = ? AND patch_id = ?"
-                           (list server-url pid)))
+                           (list server-url pid))
+          (patchwork-db-delete-note server-url "patch" pid))
+        (dolist (sid series-ids)
+          (patchwork-db-delete-note server-url "series" sid))
         (sqlite-execute db (format "DELETE FROM patches WHERE server_url = ? AND series_id IN (%s)"
                                     (mapconcat #'number-to-string series-ids ","))
                          (list server-url))
