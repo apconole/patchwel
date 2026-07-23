@@ -1,0 +1,3 @@
+test: bash "$TMT_TREE/tests/run-ert.sh" "$TMT_TREE/tests/test-pending-changes.el"
+summary: Offline-tolerant patch/series state and delegate updates - apply, queue, drain, conflict
+tag: [pending-changes]

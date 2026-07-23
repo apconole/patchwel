@@ -10,10 +10,12 @@
 (defvar patchwork-db--connection nil
   "Cached connection to the local Patchwork SQLite database.")
 
-(defconst patchwork-db-schema-version 6
+(defconst patchwork-db-schema-version 7
   "Bump whenever `patchwork-db-schema' changes shape.
 A mismatch causes the local cache tables to be dropped and recreated,
-since the database only ever holds re-fetchable cache data.")
+since the database only ever holds re-fetchable cache data -- with the
+deliberate exception of `checks' and `pending_changes' (see
+`patchwork-db-init'), which are not.")
 
 (defconst patchwork-db-schema
   '("CREATE TABLE IF NOT EXISTS projects (
@@ -100,6 +102,14 @@ since the database only ever holds re-fetchable cache data.")
        key TEXT PRIMARY KEY,
        value TEXT,
        updated_at TEXT)"
+    "CREATE TABLE IF NOT EXISTS pending_changes (
+       server_url TEXT NOT NULL,
+       patch_id INTEGER NOT NULL,
+       field TEXT NOT NULL,
+       desired_value TEXT,
+       observed_value TEXT,
+       queued_at TEXT,
+       PRIMARY KEY (server_url, patch_id, field))"
     "CREATE INDEX IF NOT EXISTS idx_patches_series ON patches(server_url, series_id)"
     "CREATE INDEX IF NOT EXISTS idx_patches_project ON patches(server_url, project_id)"
     "CREATE INDEX IF NOT EXISTS idx_series_project ON series(server_url, project_slug)"
@@ -122,7 +132,11 @@ interactive Emacs session can read and write concurrently without
   patchwork-db--connection)
 
 (defun patchwork-db-init (&optional db)
-  "Create the local cache schema in DB, migrating if the schema is outdated."
+  "Create the local cache schema in DB, migrating if the schema is outdated.
+`checks' and `pending_changes' are deliberately never in the drop list
+below: unlike the rest of the cache, `pending_changes' holds state that
+cannot be re-fetched from the server (a queued offline change), so an
+unrelated future schema bump must not silently discard it."
   (let* ((db (or db (patchwork-db-connection)))
          (version (or (caar (sqlite-select db "PRAGMA user_version")) 0)))
     (when (< version patchwork-db-schema-version)
@@ -468,6 +482,66 @@ otherwise."
            (format "SELECT %s FROM checks WHERE server_url = ? AND patch_id = ? ORDER BY date ASC"
                    patchwork-db--check-columns)
            (list server-url patch-id))))
+
+;; -- pending changes (offline-queued state/delegate updates) ---------------
+
+(defconst patchwork-db--pending-change-columns
+  "server_url, patch_id, field, desired_value, observed_value, queued_at")
+
+(defun patchwork-db--pending-change-row-to-plist (row)
+  "Convert a ROW returned from the pending_changes table into a plist."
+  (pcase-let ((`(,server-url ,patch-id ,field ,desired ,observed ,queued-at) row))
+    (list :server-url server-url :patch-id patch-id :field field
+          :desired-value desired :observed-value observed :queued-at queued-at)))
+
+(defun patchwork-db-queue-pending-change (server-url patch-id field desired-value observed-value)
+  "Queue (or replace any existing queued) change of FIELD (a string,
+\"state\" or \"delegate\") on PATCH-ID on SERVER-URL to DESIRED-VALUE.
+OBSERVED-VALUE is the value FIELD had locally at the time this change
+was requested, used later to detect whether it changed server-side in
+the meantime before the queued change is ever applied.  Only one
+pending change per (SERVER-URL, PATCH-ID, FIELD) is kept -- a newer
+request for the same patch+field replaces the older queued one."
+  (sqlite-execute
+   (patchwork-db-connection)
+   (format "INSERT INTO pending_changes (%s) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(server_url, patch_id, field) DO UPDATE SET
+              desired_value = excluded.desired_value,
+              observed_value = excluded.observed_value,
+              queued_at = excluded.queued_at"
+           patchwork-db--pending-change-columns)
+   (list server-url patch-id field desired-value observed-value (current-time-string))))
+
+(defun patchwork-db-get-pending-change (server-url patch-id field)
+  "Return the queued change plist for (SERVER-URL, PATCH-ID, FIELD), or nil."
+  (let ((rows (sqlite-select
+               (patchwork-db-connection)
+               (format "SELECT %s FROM pending_changes
+                        WHERE server_url = ? AND patch_id = ? AND field = ?"
+                       patchwork-db--pending-change-columns)
+               (list server-url patch-id field))))
+    (when rows
+      (patchwork-db--pending-change-row-to-plist (car rows)))))
+
+(defun patchwork-db-get-pending-changes (&optional server-url)
+  "Return all queued changes, or only those on SERVER-URL if given."
+  (mapcar #'patchwork-db--pending-change-row-to-plist
+          (if server-url
+              (sqlite-select
+               (patchwork-db-connection)
+               (format "SELECT %s FROM pending_changes WHERE server_url = ?"
+                       patchwork-db--pending-change-columns)
+               (list server-url))
+            (sqlite-select
+             (patchwork-db-connection)
+             (format "SELECT %s FROM pending_changes" patchwork-db--pending-change-columns)))))
+
+(defun patchwork-db-delete-pending-change (server-url patch-id field)
+  "Delete the queued change for (SERVER-URL, PATCH-ID, FIELD), if any."
+  (sqlite-execute
+   (patchwork-db-connection)
+   "DELETE FROM pending_changes WHERE server_url = ? AND patch_id = ? AND field = ?"
+   (list server-url patch-id field)))
 
 ;; -- sync metadata ------------------------------------------------------
 

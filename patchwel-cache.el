@@ -459,8 +459,14 @@ event coverage rather than waiting for the next periodic full sync.
 A server or project that errors out (network failure, HTTP error,
 etc.) is skipped with a warning rather than aborting the rest of the
 sync, so one bad server never prevents the others' cached data from
-showing.  Returns all cached series afterwards, including any left
-over from previous successful syncs of a server that just failed."
+showing.  Once every one of a server's configured projects has been
+attempted, retries any of that server's queued offline state/delegate
+changes (`patchwork-cache--drain-pending-changes') -- deliberately once
+per *server*, not per project, since a queued change isn't scoped to
+one project and draining after only the first of several projects has
+synced would compare it against other, not-yet-refreshed projects'
+stale local data.  Returns all cached series afterwards, including any
+left over from previous successful syncs of a server that just failed."
   (dolist (server patchwork-servers)
     (dolist (project (patchwork-server-projects server))
       (condition-case err
@@ -469,8 +475,185 @@ over from previous successful syncs of a server that just failed."
          (message "Patchwork: failed to sync %s%s: %s"
                   (plist-get server :url)
                   (if project (format " (%s)" project) "")
-                  (error-message-string err))))))
+                  (error-message-string err)))))
+    (condition-case err
+        (patchwork-cache--drain-pending-changes server)
+      (error
+       (message "Patchwork: failed to drain queued changes for %s: %s"
+                (plist-get server :url) (error-message-string err)))))
   (patchwork-db-query-series))
+
+;; -- offline-tolerant patch/series state and delegate updates --------------
+
+(defvar patchwork-cache--draining-p nil
+  "Non-nil, bound to the server plist currently being drained, while
+`patchwork-cache--drain-pending-changes' is running for it.  Interactive
+set commands check this (via `patchwork-cache--set-patch-field') and
+decline to proceed rather than race a background drain touching the
+same patch, since both would otherwise be free to run at the same time
+\(a blocking synchronous HTTP call can still let a sync timer fire
+reentrantly).")
+
+(defun patchwork-cache--queueable-error-p (err)
+  "Return non-nil if ERR (a condition-case error value, (SYMBOL . DATA))
+should be queued for later retry rather than signaled to the caller.
+Queueable: `patchwork-api-timeout-error'; a `patchwork-api-http-error'
+with a nil (unparseable) or >=500 status (a genuinely transient-looking
+server problem, not a rejection); any other error at all (connection
+refused, DNS failure, a non-JSON/challenge-page response, which signals
+a plain `error').  NOT queueable: a `patchwork-api-http-error' with a
+4xx status -- retrying a permission or not-found rejection blindly is
+pointless."
+  (pcase (car err)
+    ('patchwork-api-http-error
+     (let ((status (nth 1 err)))
+       (or (null status) (>= status 500))))
+    (_ t)))
+
+(defun patchwork-cache--set-patch-field (server patch-id field new-value api-fn column)
+  "Shared implementation setting FIELD (the string \"state\" or
+\"delegate\") to NEW-VALUE for PATCH-ID on SERVER by calling API-FN as
+\(API-FN SERVER PATCH-ID NEW-VALUE\), updating COLUMN (the matching
+keyword, :state or :delegate) in the local `patches' row on success.
+On a `patchwork-cache--queueable-error-p' failure, queues the change
+instead of signaling it (see `patchwork-db-queue-pending-change'),
+using the patch's current cached COLUMN value as what was \"observed\"
+at request time, for later conflict detection.  Any other failure
+\(e.g. a 4xx rejection) propagates normally.  Returns `applied',
+`queued', or `busy' (a drain for this server is already running)."
+  (let* ((server-url (plist-get server :url)))
+    (if (and patchwork-cache--draining-p
+              (equal (plist-get patchwork-cache--draining-p :url) server-url))
+        (progn
+          (message "patchwork: a background sync is draining queued changes for %s right now; try again in a moment"
+                    server-url)
+          'busy)
+      (let* ((patch (patchwork-db-get-patch server-url patch-id))
+             (observed (plist-get patch column)))
+        (condition-case err
+            (progn
+              (funcall api-fn server patch-id new-value)
+              (when patch
+                (patchwork-db-insert-patch (plist-put (copy-sequence patch) column new-value)))
+              (patchwork-db-delete-pending-change server-url patch-id field)
+              (message "patchwork: %s set to %s for patch %s" field new-value patch-id)
+              'applied)
+          (error
+           (if (patchwork-cache--queueable-error-p err)
+               (progn
+                 (patchwork-db-queue-pending-change server-url patch-id field new-value observed)
+                 (message "patchwork: network unavailable, queued %s change (%s) for patch %s"
+                          field new-value patch-id)
+                 'queued)
+             (signal (car err) (cdr err)))))))))
+
+(defun patchwork-cache-set-patch-state (server patch-id new-state)
+  "Set PATCH-ID's state to NEW-STATE on SERVER, queuing it locally
+instead of failing outright if the server can't be reached right now --
+see `patchwork-cache--set-patch-field'."
+  (patchwork-cache--set-patch-field server patch-id "state" new-state
+                                     #'patchwork-api-set-state :state))
+
+(defun patchwork-cache-set-patch-delegate (server patch-id new-delegate)
+  "Set PATCH-ID's delegate to NEW-DELEGATE on SERVER, queuing it locally
+instead of failing outright if the server can't be reached right now --
+see `patchwork-cache--set-patch-field'.  NEW-DELEGATE must already be
+whatever form the server's API actually expects (a user id or username,
+depending on deployment) -- the locally cached delegate is a resolved
+display name for display purposes only, and there is no name-to-id
+lookup here."
+  (patchwork-cache--set-patch-field server patch-id "delegate" new-delegate
+                                     #'patchwork-api-set-delegate :delegate))
+
+(defun patchwork-cache-set-series-state (server series-id new-state)
+  "Set NEW-STATE on every patch currently in SERIES-ID on SERVER.
+Patchwork has no native per-series state -- this simply loops
+`patchwork-cache-set-patch-state' over the series' patches; one patch's
+failure is reported but doesn't stop the rest from being attempted."
+  (dolist (patch (patchwork-db-get-series-patches (plist-get server :url) series-id))
+    (condition-case err
+        (patchwork-cache-set-patch-state server (plist-get patch :id) new-state)
+      (error
+       (message "patchwork: failed to set state for patch %s: %s"
+                (plist-get patch :id) (error-message-string err))))))
+
+(defun patchwork-cache-set-series-delegate (server series-id new-delegate)
+  "Set NEW-DELEGATE on every patch currently in SERIES-ID on SERVER.
+See `patchwork-cache-set-series-state' and
+`patchwork-cache-set-patch-delegate'."
+  (dolist (patch (patchwork-db-get-series-patches (plist-get server :url) series-id))
+    (condition-case err
+        (patchwork-cache-set-patch-delegate server (plist-get patch :id) new-delegate)
+      (error
+       (message "patchwork: failed to set delegate for patch %s: %s"
+                (plist-get patch :id) (error-message-string err))))))
+
+(defun patchwork-cache-patch-pending-value (server-url patch-id field)
+  "Return the queued desired value for FIELD (\"state\" or \"delegate\")
+on PATCH-ID on SERVER-URL, or nil if nothing is queued for it."
+  (plist-get (patchwork-db-get-pending-change server-url patch-id field) :desired-value))
+
+(defun patchwork-cache-series-pending-value (server-url series-id field)
+  "Return the queued desired value for FIELD across every patch in
+SERIES-ID on SERVER-URL: nil if none are pending, the value if every
+one of the series' patches that has a pending FIELD change agrees on
+it AND every patch has one, or the symbol `mixed' if they disagree or
+only some of the series' patches have one queued -- this can happen
+after a partial bulk failure, or if one patch was changed
+individually, and should never be silently collapsed to one
+arbitrarily-chosen patch's value."
+  (let ((values nil)
+        (any-missing nil))
+    (dolist (patch (patchwork-db-get-series-patches server-url series-id))
+      (let ((v (patchwork-cache-patch-pending-value server-url (plist-get patch :id) field)))
+        (if v (push v values) (setq any-missing t))))
+    (cond
+     ((null values) nil)
+     ((and (not any-missing) (= (length (delete-dups (copy-sequence values))) 1))
+      (car values))
+     (t 'mixed))))
+
+(defun patchwork-cache--drain-pending-changes (server)
+  "Retry every currently-queued change for SERVER now that a sync has
+just succeeded against it.  For each: if the patch is no longer
+tracked locally at all, leave it queued (skip it) rather than risk
+applying a stale value against something nobody's watched since;
+otherwise compare the patch's current cached value for that field
+against what was observed when the change was queued -- if it still
+matches, apply the change for real; if it has changed server-side in
+the meantime, discard the queued change and report the conflict
+rather than applying it (does not keep it around for later review --
+see the design note in TODO.org)."
+  (let* ((server-url (plist-get server :url))
+         (patchwork-cache--draining-p server))
+    (dolist (pending (patchwork-db-get-pending-changes server-url))
+      (let* ((patch-id (plist-get pending :patch-id))
+             (field (plist-get pending :field))
+             (column (intern (concat ":" field)))
+             (patch (patchwork-db-get-patch server-url patch-id)))
+        (cond
+         ((null patch)
+          (message "patchwork: patch %s no longer tracked locally; leaving its queued %s change as-is"
+                   patch-id field))
+         ((equal (plist-get patch column) (plist-get pending :observed-value))
+          (let ((api-fn (if (equal field "state") #'patchwork-api-set-state #'patchwork-api-set-delegate)))
+            (condition-case err
+                (progn
+                  (funcall api-fn server patch-id (plist-get pending :desired-value))
+                  (patchwork-db-insert-patch
+                   (plist-put (copy-sequence patch) column (plist-get pending :desired-value)))
+                  (patchwork-db-delete-pending-change server-url patch-id field)
+                  (message "patchwork: applied queued %s change (%s) for patch %s"
+                           field (plist-get pending :desired-value) patch-id))
+              (error
+               (unless (patchwork-cache--queueable-error-p err)
+                 (patchwork-db-delete-pending-change server-url patch-id field))
+               (message "patchwork: retry of queued %s change for patch %s failed: %s"
+                        field patch-id (error-message-string err))))))
+         (t
+          (message "patchwork: queued %s change for patch %s is stale (was %s, now %s) -- discarding, not applying"
+                   field patch-id (plist-get pending :observed-value) (plist-get patch column))
+          (patchwork-db-delete-pending-change server-url patch-id field)))))))
 
 (defun patchwork-cache-sync-series (server series-id)
   "Fetch and cache SERIES-ID from SERVER directly -- its patches,

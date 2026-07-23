@@ -122,6 +122,45 @@
            :url "" :updated-at "2026-01-01"))
     (should (= (length (patchwork-db-query-series)) 1))))
 
+(ert-deftest patchwork-db-test-pending-change-crud ()
+  (patchwork-test-with-temp-db
+    (should (null (patchwork-db-get-pending-change "http://x" 100 "state")))
+    (patchwork-db-queue-pending-change "http://x" 100 "state" "accepted" "new")
+    (let ((got (patchwork-db-get-pending-change "http://x" 100 "state")))
+      (should (equal (plist-get got :desired-value) "accepted"))
+      (should (equal (plist-get got :observed-value) "new"))
+      (should (plist-get got :queued-at)))
+    ;; a second queue on the same (server, patch, field) replaces the first
+    (patchwork-db-queue-pending-change "http://x" 100 "state" "rejected" "accepted")
+    (let ((got (patchwork-db-get-pending-change "http://x" 100 "state")))
+      (should (equal (plist-get got :desired-value) "rejected"))
+      (should (equal (plist-get got :observed-value) "accepted")))
+    ;; a different field on the same patch is tracked independently
+    (patchwork-db-queue-pending-change "http://x" 100 "delegate" "bob" nil)
+    (should (= (length (patchwork-db-get-pending-changes "http://x")) 2))
+    (patchwork-db-delete-pending-change "http://x" 100 "state")
+    (should (null (patchwork-db-get-pending-change "http://x" 100 "state")))
+    (should (patchwork-db-get-pending-change "http://x" 100 "delegate"))))
+
+(ert-deftest patchwork-db-test-pending-changes-filtered-by-server ()
+  (patchwork-test-with-temp-db
+    (patchwork-db-queue-pending-change "http://x" 100 "state" "accepted" "new")
+    (patchwork-db-queue-pending-change "http://y" 200 "state" "accepted" "new")
+    (should (= (length (patchwork-db-get-pending-changes)) 2))
+    (should (= (length (patchwork-db-get-pending-changes "http://x")) 1))
+    (should (= (length (patchwork-db-get-pending-changes "http://y")) 1))))
+
+(ert-deftest patchwork-db-test-pending-change-survives-schema-migration ()
+  ;; pending_changes is deliberately excluded from patchwork-db-init's
+  ;; drop-and-recreate list, since it holds state that can't be
+  ;; re-fetched from the server -- unlike the rest of the cache.
+  (patchwork-test-with-temp-db
+    (patchwork-db-queue-pending-change "http://x" 100 "state" "accepted" "new")
+    (sqlite-execute (patchwork-db-connection) "PRAGMA user_version = 0")
+    (patchwork-db-init (patchwork-db-connection))
+    (let ((got (patchwork-db-get-pending-change "http://x" 100 "state")))
+      (should (equal (plist-get got :desired-value) "accepted")))))
+
 (provide 'test-db)
 
 ;;; test-db.el ends here

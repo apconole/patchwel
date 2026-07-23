@@ -217,6 +217,8 @@ already cached without syncing first — handy if something else (e.g.
 | ~G~       | ~patchwork-fetch-series~         | Fetch and cache one specific series by server + id directly, regardless of ~patchwork-sync-lookback-days~, then open its detail buffer. |
 | ~a~       | ~patchwork-series-apply-at-point~ | Apply every patch in the series at point to a git repository, working-tree only (~git apply~, no commits). |
 | ~R~       | ~patchwork-series-review-at-point~ | Apply the series at point as real commits and open a browsable view of them — see [[*Applying a series and starting a review][Applying a series and starting a review]]. |
+| ~s~       | ~patchwork-series-set-state-at-point~ | Bulk-set the state of every patch in the series at point — see [[*Setting patch/series state and delegate][Setting patch/series state and delegate]]. |
+| ~d~       | ~patchwork-series-set-delegate-at-point~ | Bulk-set the delegate of every patch in the series at point.  |
 | ~n~/~p~   | ~patchwork-series-next~/~-prev~  | Move to the next/previous series row.                         |
 | ~N~/~P~   | ~patchwork-series-next-server~/~-prev-server~ | Move to the next/previous server, skipping over any remaining project groups under the current one. |
 | ~f~       | ~patchwork-series-set-filter~    | Interactively edit the state/server/project/author filter, prefilled with the current values. |
@@ -240,6 +242,10 @@ each patch's comments and CI checks.
 | ~g~     | ~patchwork-series-detail-refresh~    | Redraw this series' detail (title, author, tags, checks, patches, comments). |
 | ~a~     | ~patchwork-series-detail-apply~      | Apply every patch in this series, working-tree only (~git apply~, no commits). |
 | ~R~     | ~patchwork-series-detail-review~     | Apply this series as real commits and open a browsable view of them. |
+| ~s~     | ~patchwork-series-detail-set-state-at-point~ | Set the state of the patch at point — see [[*Setting patch/series state and delegate][Setting patch/series state and delegate]]. |
+| ~d~     | ~patchwork-series-detail-set-delegate-at-point~ | Set the delegate of the patch at point.                |
+| ~S~     | ~patchwork-series-detail-set-series-state~ | Bulk-set the state of every patch in this series, regardless of point. |
+| ~D~     | ~patchwork-series-detail-set-series-delegate~ | Bulk-set the delegate of every patch in this series, regardless of point. |
 | ~n~/~p~ | ~patchwork-series-detail-next-patch~/~-prev-patch~ | Move to the next/previous patch's summary line, regardless of expand state. |
 | ~N~/~P~ | ~patchwork-series-detail-next-comment~/~-prev-comment~ | Move to the next/previous comment's summary line. |
 | ~+~     | ~patchwork-series-detail-expand-all~ | Expand every patch and comment in this buffer.            |
@@ -250,11 +256,40 @@ A CI check's ~target_url~, when it has one, is rendered as a clickable
 button (RET/mouse-2) that opens it with ~browse-url~ rather than as
 plain text.
 
-Note: delegating a patch and changing its state are supported at the
-API layer (~patchwork-api-set-delegate~, ~patchwork-api-set-state~ in
-~patchwel-api.el~), but neither is yet wired to an interactive command
-or keybinding — that's on the roadmap, not something you can drive
-from the listing buffer today.
+** Setting patch/series state and delegate
+
+~s~/~d~ set the state/delegate of a single patch (the patch at point
+in a detail buffer, or every patch in the series at point in the
+listing buffer); ~S~/~D~ in a detail buffer bulk-set the whole series
+regardless of point. Patchwork has no native per-series state or
+delegate — the series-wide commands just apply the same value to
+every patch currently in that series, one at a time, and a single
+patch's failure is reported but doesn't stop the rest from being
+attempted.
+
+Setting either field is offline-tolerant: the change is attempted
+immediately, and if the server can't be reached right now (a timeout,
+a 5xx, or any other network-level failure), it's queued locally
+instead of failing outright. A queued change is retried automatically
+the next time a sync against that server succeeds. If the patch's
+real state/delegate turns out to have changed server-side in the
+meantime (someone else touched it before the queued change was ever
+applied), the queued change is discarded and reported rather than
+applied — it is not silently forced through, and it is not kept around
+for later review.
+
+Wherever a patch or series' state/delegate is already shown, a queued
+change shows alongside the current value. The series detail buffer
+shows the full form, e.g. ~State: new (pending: rejected)~, on both
+the series-wide header lines and each patch's own summary line; the
+main listing buffer's columns are fixed-width and shared across every
+row, so there's only room for a compact trailing ~*~ marker instead —
+open the series' detail buffer to see what's actually queued.
+
+Note: the locally cached delegate is a resolved display name, but
+Patchwork's write API expects a delegate user id or username (which
+varies by deployment) — there's no name-to-id lookup here, so type
+whatever your server's API actually expects when prompted.
 
 ** Fetching a specific series by id
 

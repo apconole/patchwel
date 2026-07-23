@@ -152,6 +152,84 @@ listing buffer (no sync), run BODY, then kill the buffer."
       (when (get-buffer "*patchwork-series-x-1*")
         (kill-buffer "*patchwork-series-x-1*")))))
 
+(ert-deftest patchwork-ui-test-listing-keybindings-resolve ()
+  (patchwork-ui-test--with-seeded-listing
+    (with-current-buffer patchwork-series-buffer-name
+      (should (eq (lookup-key patchwork-series-mode-map "s") #'patchwork-series-set-state-at-point))
+      (should (eq (lookup-key patchwork-series-mode-map "d") #'patchwork-series-set-delegate-at-point)))))
+
+(ert-deftest patchwork-ui-test-detail-keybindings-resolve ()
+  (should (eq (lookup-key patchwork-series-detail-mode-map "s")
+              #'patchwork-series-detail-set-state-at-point))
+  (should (eq (lookup-key patchwork-series-detail-mode-map "d")
+              #'patchwork-series-detail-set-delegate-at-point))
+  (should (eq (lookup-key patchwork-series-detail-mode-map "S")
+              #'patchwork-series-detail-set-series-state))
+  (should (eq (lookup-key patchwork-series-detail-mode-map "D")
+              #'patchwork-series-detail-set-series-delegate)))
+
+(ert-deftest patchwork-ui-test-listing-row-marks-pending-change ()
+  (patchwork-ui-test--with-seeded-listing
+    (cl-letf (((symbol-function 'patchwork-cache-series-pending-value)
+               (lambda (_server-url series-id field)
+                 (when (and (= series-id 1001) (equal field "state")) "rejected"))))
+      (with-current-buffer patchwork-series-buffer-name
+        (patchwork-series--render)
+        (goto-char (point-min))
+        (should (search-forward "new*" nil t))))))
+
+(ert-deftest patchwork-ui-test-listing-row-no-marker-when-nothing-pending ()
+  (patchwork-ui-test--with-seeded-listing
+    (with-current-buffer patchwork-series-buffer-name
+      (goto-char (point-min))
+      (should-not (search-forward "new*" nil t)))))
+
+(ert-deftest patchwork-ui-test-detail-header-shows-full-pending-text ()
+  (patchwork-test-with-temp-db
+    (patchwork-db-insert-project "http://x" 1 "Proj" "proj")
+    (patchwork-db-upsert-series
+     (list :server-url "http://x" :id 1 :project-id 1 :project-slug "proj"
+           :name "s" :submitter "Alice" :version 1 :total 1 :submitted-at "2026-01-01"
+           :state "new" :assignee "unassigned" :comment-count 0 :ack-count 0 :review-count 0
+           :test-count 0 :fixes-count 0 :check-success 0 :check-warning 0 :check-fail 0
+           :url "" :updated-at "2026-01-01"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'patchwork-cache-series-pending-value)
+                   (lambda (_server-url _series-id field)
+                     (when (equal field "state") "rejected"))))
+          (patchwork-view-series-details "http://x" 1)
+          (with-current-buffer "*patchwork-series-x-1*"
+            (goto-char (point-min))
+            (should (search-forward "State:       new (pending: rejected)" nil t))))
+      (when (get-buffer "*patchwork-series-x-1*")
+        (kill-buffer "*patchwork-series-x-1*")))))
+
+(ert-deftest patchwork-ui-test-detail-patch-line-shows-full-pending-text ()
+  (patchwork-test-with-temp-db
+    (patchwork-db-insert-project "http://x" 1 "Proj" "proj")
+    (patchwork-db-upsert-series
+     (list :server-url "http://x" :id 1 :project-id 1 :project-slug "proj"
+           :name "s" :submitter "Alice" :version 1 :total 1 :submitted-at "2026-01-01"
+           :state "new" :assignee nil :comment-count 0 :ack-count 0 :review-count 0
+           :test-count 0 :fixes-count 0 :check-success 0 :check-warning 0 :check-fail 0
+           :url "" :updated-at "2026-01-01"))
+    (patchwork-db-insert-patch
+     (list :server-url "http://x" :id 100 :series-id 1 :project-id 1 :state "new"
+           :submitter "Alice" :delegate nil :name "a patch" :date "2026-01-01"
+           :series-position 1 :check-state "success" :updated-at "2026-01-01"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'patchwork-cache-patch-pending-value)
+                   (lambda (_server-url _patch-id field)
+                     (when (equal field "state") "accepted")))
+                  ((symbol-function 'patchwork-cache-series-pending-value)
+                   (lambda (&rest _) nil)))
+          (patchwork-view-series-details "http://x" 1)
+          (with-current-buffer "*patchwork-series-x-1*"
+            (goto-char (point-min))
+            (should (search-forward "[new (pending: accepted)]" nil t))))
+      (when (get-buffer "*patchwork-series-x-1*")
+        (kill-buffer "*patchwork-series-x-1*")))))
+
 (provide 'test-ui-render)
 
 ;;; test-ui-render.el ends here

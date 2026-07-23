@@ -181,14 +181,16 @@ change at runtime with `patchwork-series-set-filter' or
 
 (defconst patchwork-series--column-formats
   '("%-6s" "%-34.34s" "%-14.14s" "%-10s" "%5s" "%4s" "%4s" "%5s" "%4s"
-    "%5s" "%5s" "%5s" "%-12.12s" "%-16s")
+    "%5s" "%5s" "%5s" "%-14.14s" "%-18.18s")
   "Per-column format specs, in order, shared by
 `patchwork-series--header-row-string' and `patchwork-series--row-string'
 so their widths can never drift apart.  Columns: id, title, author,
 submitted, comments, ack, review, test, fixes, check-success,
 check-warning, check-fail, assignee, state.  Server and project aren't
 columns here since each group's header line already names them once
-for every series underneath it.")
+for every series underneath it.  Assignee/state are a bit wider than
+the values themselves strictly need, leaving headroom for the `*'
+pending-change marker appended by `patchwork-series--row-string'.")
 
 (defun patchwork-series--format-columns (values &optional faces)
   "Format VALUES (one per `patchwork-series--column-formats' entry) into
@@ -212,6 +214,18 @@ formatted column individually."
    '("ID" "Title" "Author" "Submitted" "Cmts" "Ack" "Rev" "Test" "Fix"
      "Succ" "Warn" "Fail" "Assignee" "State")))
 
+(defun patchwork-series--pending-marker (series field)
+  "Return a compact `*' marker if any patch in SERIES has a queued
+FIELD change (\"state\" or \"delegate\") pending, else \"\".  The
+listing buffer's columns are fixed-width and shared across every row,
+so unlike the detail buffer there's no room here for the full
+`Current (pending: Queued)' text -- see
+`patchwork-cache-series-pending-value'."
+  (if (patchwork-cache-series-pending-value
+       (plist-get series :server-url) (plist-get series :id) field)
+      "*"
+    ""))
+
 (defun patchwork-series--row-string (series)
   "Format SERIES as one aligned display row.
 The title and submitted-date columns get their own faces
@@ -219,7 +233,9 @@ The title and submitted-date columns get their own faces
 `patchwork-series-highlight-rules' rule matches, its face is then
 layered over the whole row (filling in gaps left by the per-column
 faces, via `add-face-text-property' with APPEND so it doesn't clobber
-them)."
+them).  A trailing `*' on the assignee or state column means at least
+one patch in the series has a queued offline change to that field not
+yet applied -- see `patchwork-series--pending-marker'."
   (let* ((row (patchwork-series--format-columns
                (list (plist-get series :id)
                      (or (plist-get series :name) "")
@@ -233,8 +249,10 @@ them)."
                      (or (plist-get series :check-success) 0)
                      (or (plist-get series :check-warning) 0)
                      (or (plist-get series :check-fail) 0)
-                     (or (plist-get series :assignee) "")
-                     (or (plist-get series :state) ""))
+                     (concat (or (plist-get series :assignee) "")
+                             (patchwork-series--pending-marker series "delegate"))
+                     (concat (or (plist-get series :state) "")
+                             (patchwork-series--pending-marker series "state")))
                (list nil 'patchwork-series-title-face nil 'patchwork-series-date-face
                      nil nil nil nil nil nil nil nil nil nil)))
          (row-face (patchwork-series--row-face series)))
@@ -458,6 +476,36 @@ See `patchwork-review-series'."
           (patchwork-review-series server (cdr entry)))
       (message "No series on this line"))))
 
+(defun patchwork-series-set-state-at-point ()
+  "Set the state of every patch in the series at point (bulk).
+Attempts the change immediately; if the server can't be reached right
+now, queues it locally instead of failing outright, applied
+automatically once a later sync succeeds -- see
+`patchwork-cache-set-series-state'."
+  (interactive)
+  (let ((entry (patchwork-series-at-point)))
+    (if (not entry)
+        (message "No series on this line")
+      (let ((server (or (patchwork-servers-find (car entry))
+                         (error "Unknown Patchwork server: %s" (car entry))))
+            (new-state (read-string "New state for every patch in this series: ")))
+        (patchwork-cache-set-series-state server (cdr entry) new-state)
+        (patchwork-series--render)))))
+
+(defun patchwork-series-set-delegate-at-point ()
+  "Set the delegate of every patch in the series at point (bulk).
+See `patchwork-series-set-state-at-point' and
+`patchwork-cache-set-series-delegate'."
+  (interactive)
+  (let ((entry (patchwork-series-at-point)))
+    (if (not entry)
+        (message "No series on this line")
+      (let ((server (or (patchwork-servers-find (car entry))
+                         (error "Unknown Patchwork server: %s" (car entry))))
+            (new-delegate (read-string "New delegate for every patch in this series: ")))
+        (patchwork-cache-set-series-delegate server (cdr entry) new-delegate)
+        (patchwork-series--render)))))
+
 (defun patchwork-series-set-filter ()
   "Interactively edit this buffer's state/server/project/author filter.
 Each prompt is pre-filled with the current value; clear the input to
@@ -500,6 +548,8 @@ remove that dimension (show every value for it)."
     (define-key map "G" #'patchwork-fetch-series)
     (define-key map "a" #'patchwork-series-apply-at-point)
     (define-key map "R" #'patchwork-series-review-at-point)
+    (define-key map "s" #'patchwork-series-set-state-at-point)
+    (define-key map "d" #'patchwork-series-set-delegate-at-point)
     (define-key map "f" #'patchwork-series-set-filter)
     (define-key map "F" #'patchwork-series-reset-filter)
     (define-key map "n" #'patchwork-series-next)
@@ -513,7 +563,8 @@ remove that dimension (show every value for it)."
   "Keymap for `patchwork-series-mode'.
 n/p move to the next/previous series row; N/P move to the next/
 previous server, skipping over any remaining project groups under the
-current one.")
+current one; s/d bulk-set the state/delegate of every patch in the
+series at point.")
 
 (define-derived-mode patchwork-series-mode special-mode "Patchwork-Series"
   "Major mode listing cached Patchwork series, grouped by server and
@@ -662,6 +713,20 @@ if any (file/hunk headers, added/removed lines)."
    ((string-prefix-p "-" line) (propertize line 'face 'diff-removed))
    (t line)))
 
+(defun patchwork-series-detail--pending-display (value)
+  "Return VALUE (as returned by `patchwork-cache-patch-pending-value' or
+`patchwork-cache-series-pending-value': nil, a string, or the symbol
+`mixed') as a display string, or nil if there is nothing pending."
+  (cond ((null value) nil)
+        ((eq value 'mixed) "mixed")
+        (t value)))
+
+(defun patchwork-series-detail--with-pending (current pending)
+  "Return CURRENT with a ` (pending: PENDING)' suffix appended if
+PENDING (as returned by `patchwork-series-detail--pending-display') is
+non-nil, else CURRENT unchanged."
+  (if pending (format "%s (pending: %s)" current pending) current))
+
 (defun patchwork-view-series-details (server-url series-id)
   "Show a detail buffer for SERIES-ID on SERVER-URL.
 Displays metadata, tag/check counters, its patches, and each patch's
@@ -692,8 +757,16 @@ a comment line toggles it open to show the full text."
         (insert (format "Author:      %s\n" (or (plist-get series :submitter) "")))
         (insert (format "Submitted:   %s\n"
                         (patchwork-series--format-date (plist-get series :submitted-at))))
-        (insert (format "Assignee:    %s\n" (or (plist-get series :assignee) "unassigned")))
-        (insert (format "State:       %s\n" (or (plist-get series :state) "")))
+        (insert (format "Assignee:    %s\n"
+                        (patchwork-series-detail--with-pending
+                         (or (plist-get series :assignee) "unassigned")
+                         (patchwork-series-detail--pending-display
+                          (patchwork-cache-series-pending-value server-url series-id "delegate")))))
+        (insert (format "State:       %s\n"
+                        (patchwork-series-detail--with-pending
+                         (or (plist-get series :state) "")
+                         (patchwork-series-detail--pending-display
+                          (patchwork-cache-series-pending-value server-url series-id "state")))))
         (when (and (plist-get series :url) (not (string-empty-p (plist-get series :url))))
           (insert "URL:         ")
           (insert-text-button
@@ -715,13 +788,25 @@ a comment line toggles it open to show the full text."
         (insert "\n--- Patches ---\n")
         (dolist (patch patches)
           (let* ((patch-id (plist-get patch :id))
-                 (expanded (gethash patch-id patchwork-series-detail--expanded-patches)))
+                 (expanded (gethash patch-id patchwork-series-detail--expanded-patches))
+                 (state-display (patchwork-series-detail--with-pending
+                                  (or (plist-get patch :state) "")
+                                  (patchwork-series-detail--pending-display
+                                   (patchwork-cache-patch-pending-value server-url patch-id "state"))))
+                 (delegate-pending (patchwork-series-detail--pending-display
+                                     (patchwork-cache-patch-pending-value server-url patch-id "delegate")))
+                 (delegate-text (when (or (plist-get patch :delegate) delegate-pending)
+                                  (format " (delegate: %s)"
+                                          (patchwork-series-detail--with-pending
+                                           (or (plist-get patch :delegate) "unassigned")
+                                           delegate-pending)))))
             (insert (propertize
-                     (format "%s %3d. #%-8d [%-16s] %s\n"
+                     (format "%s %3d. #%-8d [%s]%s %s\n"
                              (if expanded "[-]" "[+]")
                              (or (plist-get patch :series-position) 0)
                              patch-id
-                             (or (plist-get patch :state) "")
+                             state-display
+                             (or delegate-text "")
                              (or (plist-get patch :name) ""))
                      'patchwork-patch-id patch-id
                      'face 'patchwork-patch-line-face))
@@ -821,6 +906,65 @@ aren't part of the cached list-view data) and replies to it."
         (patchwork-mail-reply-to-patch server patch-id)))
      (t (message "Nothing to reply to on this line")))))
 
+(defun patchwork-series-detail-set-state-at-point ()
+  "Set the state of the patch at point in this detail buffer.
+Attempts the change immediately; if the server can't be reached right
+now, queues it locally instead of failing outright, applied
+automatically once a later sync succeeds -- see
+`patchwork-cache-set-patch-state'.  For every patch in the series
+instead, see `patchwork-series-detail-set-series-state'."
+  (interactive)
+  (let ((patch-id (patchwork-series-detail--patch-at-point)))
+    (if (not patch-id)
+        (message "No patch on this line")
+      (let ((server (or (patchwork-servers-find patchwork-series-detail--server-url)
+                         (error "Unknown Patchwork server: %s"
+                                patchwork-series-detail--server-url)))
+            (new-state (read-string "New state for this patch: ")))
+        (patchwork-cache-set-patch-state server patch-id new-state)
+        (patchwork-series-detail-refresh)))))
+
+(defun patchwork-series-detail-set-delegate-at-point ()
+  "Set the delegate of the patch at point in this detail buffer.
+See `patchwork-series-detail-set-state-at-point' and
+`patchwork-cache-set-patch-delegate'."
+  (interactive)
+  (let ((patch-id (patchwork-series-detail--patch-at-point)))
+    (if (not patch-id)
+        (message "No patch on this line")
+      (let ((server (or (patchwork-servers-find patchwork-series-detail--server-url)
+                         (error "Unknown Patchwork server: %s"
+                                patchwork-series-detail--server-url)))
+            (new-delegate (read-string "New delegate for this patch: ")))
+        (patchwork-cache-set-patch-delegate server patch-id new-delegate)
+        (patchwork-series-detail-refresh)))))
+
+(defun patchwork-series-detail-set-series-state ()
+  "Set the state of every patch in this series (bulk), regardless of
+point.  See `patchwork-series-detail-set-state-at-point' for the
+patch-at-point version and `patchwork-cache-set-series-state'."
+  (interactive)
+  (when patchwork-series-detail--id
+    (let ((server (or (patchwork-servers-find patchwork-series-detail--server-url)
+                       (error "Unknown Patchwork server: %s"
+                              patchwork-series-detail--server-url)))
+          (new-state (read-string "New state for every patch in this series: ")))
+      (patchwork-cache-set-series-state server patchwork-series-detail--id new-state)
+      (patchwork-series-detail-refresh))))
+
+(defun patchwork-series-detail-set-series-delegate ()
+  "Set the delegate of every patch in this series (bulk), regardless of
+point.  See `patchwork-series-detail-set-delegate-at-point' for the
+patch-at-point version and `patchwork-cache-set-series-delegate'."
+  (interactive)
+  (when patchwork-series-detail--id
+    (let ((server (or (patchwork-servers-find patchwork-series-detail--server-url)
+                       (error "Unknown Patchwork server: %s"
+                              patchwork-series-detail--server-url)))
+          (new-delegate (read-string "New delegate for every patch in this series: ")))
+      (patchwork-cache-set-series-delegate server patchwork-series-detail--id new-delegate)
+      (patchwork-series-detail-refresh))))
+
 (defun patchwork-series-detail-expand-all ()
   "Expand every patch and comment in this series detail buffer."
   (interactive)
@@ -851,6 +995,10 @@ aren't part of the cached list-view data) and replies to it."
     (define-key map "g" #'patchwork-series-detail-refresh)
     (define-key map "a" #'patchwork-series-detail-apply)
     (define-key map "R" #'patchwork-series-detail-review)
+    (define-key map "s" #'patchwork-series-detail-set-state-at-point)
+    (define-key map "d" #'patchwork-series-detail-set-delegate-at-point)
+    (define-key map "S" #'patchwork-series-detail-set-series-state)
+    (define-key map "D" #'patchwork-series-detail-set-series-delegate)
     (define-key map "n" #'patchwork-series-detail-next-patch)
     (define-key map "p" #'patchwork-series-detail-prev-patch)
     (define-key map "N" #'patchwork-series-detail-next-comment)
@@ -861,7 +1009,9 @@ aren't part of the cached list-view data) and replies to it."
     map)
   "Keymap for `patchwork-series-detail-mode'.
 n/p move to the next/previous patch; N/P move to the next/previous
-comment; +/- expand/collapse everything in this buffer.")
+comment; +/- expand/collapse everything in this buffer; s/d set the
+state/delegate of the patch at point; S/D bulk-set the state/delegate
+of every patch in the whole series, regardless of point.")
 
 (define-derived-mode patchwork-series-detail-mode special-mode "Patchwork-Series-Detail"
   "Major mode for viewing details of a single Patchwork series.")

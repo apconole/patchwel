@@ -458,6 +458,13 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
+        # Always drain the request body off the socket before any early
+        # return from _pre_checks (e.g. a forced status override) -- on
+        # this persistent HTTP/1.1 connection, leaving unread body bytes
+        # behind desyncs framing for whatever request comes next on the
+        # same connection (its request line gets read starting mid-body).
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b"{}"
         if self._pre_checks("PATCH", path, qs):
             return
         m = re.match(r"^/api/patches/(\d+)/$", path)
@@ -465,8 +472,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"detail": "not found"})
             return
         pid = int(m.group(1))
-        length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length) or b"{}")
+        body = json.loads(raw or b"{}")
         with STATE.lock:
             patch = STATE.data["patches"].get(pid)
             if not patch:
@@ -479,14 +485,16 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
+        # See the comment in do_PATCH: drain the body before any early
+        # return, or an unread body desyncs the next request on this
+        # persistent connection.
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length) if length else b"{}"
         if not path.startswith("/_control/"):
             if self._pre_checks("POST", path, qs):
                 return
             self._send_json(404, {"detail": "not found"})
             return
-
-        length = int(self.headers.get("Content-Length", 0))
-        raw = self.rfile.read(length) if length else b"{}"
         try:
             body = json.loads(raw or b"{}")
         except ValueError:
@@ -500,6 +508,12 @@ class Handler(BaseHTTPRequestHandler):
                 p = STATE.data["patches"].get(int(body["patch_id"]))
                 if p:
                     p["state"] = body["state"]
+            self._send_json(200, {"ok": True})
+        elif path == "/_control/set-patch-delegate":
+            with STATE.lock:
+                p = STATE.data["patches"].get(int(body["patch_id"]))
+                if p:
+                    p["delegate"] = body["delegate"]
             self._send_json(200, {"ok": True})
         elif path == "/_control/set-since-mode":
             with STATE.lock:

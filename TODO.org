@@ -219,25 +219,46 @@ alone on a non-terminal-to-non-terminal transition, prunes it on a
 non-terminal-to-terminal one, and is a no-op re-syncing an
 already-terminal patch or with the state list set to nil.
 
-* TODO Asynchronous/offline-tolerant patch delegation
+* DONE Asynchronous/offline-tolerant patch/series state and delegate updates
 
-Setting a patch's delegate (~patchwork-api-set-delegate~) is currently
-a direct, synchronous API call: if the server is unreachable, the
-request just fails. Instead:
+Extended beyond the original scope of this entry (delegate only) to
+cover state as well, plus per-series bulk operations and interactive
+commands/keybindings -- not just the underlying API calls.
 
-- When a delegate change is requested but the server call fails
-  (timeout, connection error, etc.), save the intended change locally
-  (patch id, server, desired delegate, and the delegate value we
-  observed at request time) rather than discarding it.
-- On each subsequent successful sync/connection to that server, retry
-  any pending delegate changes.
-- Before applying a queued change, re-check the patch's *current*
-  delegate against what we observed when the change was queued. If it
-  has changed in the meantime (someone else delegated it, or changed
-  it another way), do not blindly overwrite — the change is stale and
-  needs to surface as a conflict rather than applying silently.
-- Needs a small local queue (a new sqlite table, most likely) and a
-  place to report queued/failed/conflicting changes back to the user.
+Setting a patch's state or delegate (~patchwork-api-set-state~,
+~patchwork-api-set-delegate~) is no longer a bare, all-or-nothing
+synchronous API call. ~patchwork-cache-set-patch-state~/~-delegate~
+attempt the change immediately; on a queueable failure (timeout, a 5xx,
+or any other network-level error -- but *not* a 4xx, which propagates
+as a real rejection), the intended change is saved locally instead of
+discarded (a new ~pending_changes~ sqlite table: server url, patch id,
+field, desired value, and the value observed at request time).
+~patchwork-cache-sync~ retries every queued change for a server once
+that server's entire per-project sync loop finishes (deliberately
+per-server, not per-project, since a queued change isn't scoped to one
+project). Before applying a queued change, its observed-at-request-time
+value is re-checked against the patch's current cached value: if it
+still matches, the change is applied for real; if it changed
+server-side in the meantime, the queued change is discarded and
+reported as a conflict rather than applied.
+
+~patchwork-cache-set-series-state~/~-delegate~ bulk-apply the same
+value to every patch currently in a series (Patchwork has no native
+per-series concept here) -- one patch's failure is reported but
+doesn't stop the rest of the series from being attempted.
+
+Wired to keybindings: ~s~/~d~ in the listing buffer bulk-set a series'
+state/delegate; ~s~/~d~ in a series detail buffer set the patch at
+point, ~S~/~D~ bulk-set the whole series regardless of point. See
+README.org's "Setting patch/series state and delegate" section.
+
+Known limitation, not solved here: the locally cached delegate is a
+resolved display name, but Patchwork's write API expects a delegate
+user id or username (varies by deployment) -- there's no name-to-id
+lookup, so the value typed at the prompt must already be in whatever
+form the server actually expects. Conflict *detection* still works
+correctly regardless, since both sides of that comparison are
+consistently display names.
 
 * DONE Per-series sync from the series detail buffer
 
