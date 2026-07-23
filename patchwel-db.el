@@ -543,6 +543,71 @@ request for the same patch+field replaces the older queued one."
    "DELETE FROM pending_changes WHERE server_url = ? AND patch_id = ? AND field = ?"
    (list server-url patch-id field)))
 
+;; -- purging a project's cached data -------------------------------------
+
+(defun patchwork-db--cached-project-slugs (server-url)
+  "Return the distinct project slugs with any cached series on SERVER-URL."
+  (mapcar #'car
+          (sqlite-select
+           (patchwork-db-connection)
+           "SELECT DISTINCT project_slug FROM series
+            WHERE server_url = ? AND project_slug IS NOT NULL"
+           (list server-url))))
+
+(defun patchwork-db-purge-project (server-url project-slug)
+  "Delete every cached series, patch, comment, check, and queued
+pending change for PROJECT-SLUG on SERVER-URL, plus its own `projects'
+row -- e.g. to clean up a project that got polled by mistake (a
+misconfigured sync) without disturbing any other server or project's
+cached data.  Scoped via `series.project_slug' (not `projects.id'), so
+this also cleans up data cached for a project that was queried
+directly and never got its own `projects' row.  Prompts for
+confirmation, reporting how many series/patches would be removed,
+before deleting anything."
+  (interactive
+   (let* ((server-url (completing-read
+                        "Purge cached data for server: "
+                        (mapcar (lambda (s) (plist-get s :url)) patchwork-servers)
+                        nil t))
+          (slug (completing-read
+                 "Project slug to purge: "
+                 (patchwork-db--cached-project-slugs server-url)
+                 nil t)))
+     (list server-url slug)))
+  (let* ((db (patchwork-db-connection))
+         (series-ids (mapcar #'car
+                              (sqlite-select
+                               db "SELECT id FROM series WHERE server_url = ? AND project_slug = ?"
+                               (list server-url project-slug))))
+         (patch-ids (and series-ids
+                          (mapcar #'car
+                                  (sqlite-select
+                                   db (format "SELECT id FROM patches WHERE server_url = ? AND series_id IN (%s)"
+                                              (mapconcat #'number-to-string series-ids ","))
+                                   (list server-url))))))
+    (if (null series-ids)
+        (message "Nothing cached for project %s on %s" project-slug server-url)
+      (when (or (not (called-interactively-p 'interactive))
+                (yes-or-no-p (format "Purge %d cached series (%d patches) for project %s on %s? "
+                                      (length series-ids) (length patch-ids)
+                                      project-slug server-url)))
+        (dolist (pid patch-ids)
+          (sqlite-execute db "DELETE FROM comments WHERE server_url = ? AND patch_id = ?"
+                           (list server-url pid))
+          (sqlite-execute db "DELETE FROM checks WHERE server_url = ? AND patch_id = ?"
+                           (list server-url pid))
+          (sqlite-execute db "DELETE FROM pending_changes WHERE server_url = ? AND patch_id = ?"
+                           (list server-url pid)))
+        (sqlite-execute db (format "DELETE FROM patches WHERE server_url = ? AND series_id IN (%s)"
+                                    (mapconcat #'number-to-string series-ids ","))
+                         (list server-url))
+        (sqlite-execute db "DELETE FROM series WHERE server_url = ? AND project_slug = ?"
+                         (list server-url project-slug))
+        (sqlite-execute db "DELETE FROM projects WHERE server_url = ? AND slug = ?"
+                         (list server-url project-slug))
+        (message "Purged project %s on %s: %d series, %d patch(es) removed."
+                 project-slug server-url (length series-ids) (length patch-ids))))))
+
 ;; -- sync metadata ------------------------------------------------------
 
 (defun patchwork-db-get-sync-meta (key)

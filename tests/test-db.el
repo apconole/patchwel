@@ -161,6 +161,52 @@
     (let ((got (patchwork-db-get-pending-change "http://x" 100 "state")))
       (should (equal (plist-get got :desired-value) "accepted")))))
 
+(ert-deftest patchwork-db-test-purge-project-leaves-other-projects-intact ()
+  (patchwork-test-with-temp-db
+    (patchwork-db-insert-project "http://x" 1 "Good" "good")
+    (patchwork-db-insert-project "http://x" 2 "Bad" "bad")
+    (patchwork-db-upsert-series
+     (list :server-url "http://x" :id 100 :project-id 1 :project-slug "good"
+           :name "good series" :submitter "A" :version 1 :total 1 :submitted-at "2026-01-01"
+           :state "new" :assignee nil :comment-count 0 :ack-count 0 :review-count 0
+           :test-count 0 :fixes-count 0 :check-success 0 :check-warning 0 :check-fail 0
+           :url "" :updated-at "2026-01-01"))
+    (patchwork-db-upsert-series
+     (list :server-url "http://x" :id 200 :project-id 2 :project-slug "bad"
+           :name "bad series" :submitter "A" :version 1 :total 1 :submitted-at "2026-01-01"
+           :state "new" :assignee nil :comment-count 0 :ack-count 0 :review-count 0
+           :test-count 0 :fixes-count 0 :check-success 0 :check-warning 0 :check-fail 0
+           :url "" :updated-at "2026-01-01"))
+    (patchwork-db-insert-patch
+     (list :server-url "http://x" :id 1000 :series-id 100 :project-id 1 :state "new"
+           :submitter "A" :name "good patch" :date "2026-01-01" :series-position 1))
+    (patchwork-db-insert-patch
+     (list :server-url "http://x" :id 2000 :series-id 200 :project-id 2 :state "new"
+           :submitter "A" :name "bad patch" :date "2026-01-01" :series-position 1))
+    (patchwork-db-insert-comment
+     (list :server-url "http://x" :id 5000 :patch-id 2000 :author "B" :date "2026-01-01" :content "c"))
+    (patchwork-db-insert-check
+     (list :server-url "http://x" :id 6000 :patch-id 2000 :reporter "ci" :state "success"
+           :context "b" :description "d" :date "2026-01-01"))
+    (patchwork-db-queue-pending-change "http://x" 2000 "state" "accepted" "new")
+    (patchwork-db-purge-project "http://x" "bad")
+    (should (patchwork-db-get-series "http://x" 100))
+    (should (patchwork-db-get-patch "http://x" 1000))
+    (should-not (patchwork-db-get-series "http://x" 200))
+    (should-not (patchwork-db-get-patch "http://x" 2000))
+    (should-not (patchwork-db-get-comment "http://x" 5000))
+    (should (null (patchwork-db-get-checks "http://x" 2000)))
+    (should-not (patchwork-db-get-pending-change "http://x" 2000 "state"))
+    (should (null (sqlite-select (patchwork-db-connection)
+                                  "SELECT 1 FROM projects WHERE server_url = ? AND slug = ?"
+                                  '("http://x" "bad"))))))
+
+(ert-deftest patchwork-db-test-purge-project-noop-when-nothing-cached ()
+  (patchwork-test-with-temp-db
+    ;; Just confirm it doesn't error out when there's nothing to purge.
+    (patchwork-db-purge-project "http://x" "never-synced")
+    (should-not (patchwork-db-query-series "http://x"))))
+
 (provide 'test-db)
 
 ;;; test-db.el ends here

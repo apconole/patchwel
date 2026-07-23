@@ -430,6 +430,25 @@ touching the network on its own."
     (puthash key t patchwork-series--collapsed))
   (patchwork-series--render))
 
+(defun patchwork-series-purge-group-at-point ()
+  "Purge every cached series/patch/comment/check/queued-change for the
+server+project group header at point -- e.g. to clean up a project
+that got polled by mistake.  Prompts for confirmation naming the
+server and project before deleting anything.  See
+`patchwork-db-purge-project', which does the actual deletion; unlike
+that command's own ~M-x~ entry point, calling it this way already asks
+for confirmation right here, so it isn't asked twice."
+  (interactive)
+  (let ((group (patchwork-series-group-at-point)))
+    (cond
+     ((null group) (message "Point must be on a server/project group header"))
+     ((null (cdr group)) (message "This group has no project slug to purge by"))
+     ((yes-or-no-p (format "Purge ALL cached data for project %s on %s? "
+                            (cdr group) (patchwork-server-slug (list :url (car group)))))
+      (patchwork-db-purge-project (car group) (cdr group))
+      (patchwork-series--render))
+     (t (message "Purge cancelled")))))
+
 (defun patchwork-series-dwim ()
   "View the series at point, or toggle the group header at point."
   (interactive)
@@ -550,6 +569,7 @@ remove that dimension (show every value for it)."
     (define-key map "R" #'patchwork-series-review-at-point)
     (define-key map "s" #'patchwork-series-set-state-at-point)
     (define-key map "d" #'patchwork-series-set-delegate-at-point)
+    (define-key map "k" #'patchwork-series-purge-group-at-point)
     (define-key map "f" #'patchwork-series-set-filter)
     (define-key map "F" #'patchwork-series-reset-filter)
     (define-key map "n" #'patchwork-series-next)
@@ -564,7 +584,8 @@ remove that dimension (show every value for it)."
 n/p move to the next/previous series row; N/P move to the next/
 previous server, skipping over any remaining project groups under the
 current one; s/d bulk-set the state/delegate of every patch in the
-series at point.")
+series at point; k, on a group header, purges all cached data for
+that server+project after confirming.")
 
 (define-derived-mode patchwork-series-mode special-mode "Patchwork-Series"
   "Major mode listing cached Patchwork series, grouped by server and

@@ -156,7 +156,42 @@ listing buffer (no sync), run BODY, then kill the buffer."
   (patchwork-ui-test--with-seeded-listing
     (with-current-buffer patchwork-series-buffer-name
       (should (eq (lookup-key patchwork-series-mode-map "s") #'patchwork-series-set-state-at-point))
-      (should (eq (lookup-key patchwork-series-mode-map "d") #'patchwork-series-set-delegate-at-point)))))
+      (should (eq (lookup-key patchwork-series-mode-map "d") #'patchwork-series-set-delegate-at-point))
+      (should (eq (lookup-key patchwork-series-mode-map "k") #'patchwork-series-purge-group-at-point)))))
+
+(ert-deftest patchwork-ui-test-purge-group-at-point-confirmed ()
+  (patchwork-ui-test--with-seeded-listing
+    (with-current-buffer patchwork-series-buffer-name
+      (goto-char (point-min))
+      (search-forward "proj2")
+      (beginning-of-line)
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
+        (patchwork-series-purge-group-at-point)))
+    (should (patchwork-db-get-series "http://x" 1001))
+    (should-not (patchwork-db-get-series "http://x" 1002))))
+
+(ert-deftest patchwork-ui-test-purge-group-at-point-declined-does-nothing ()
+  (patchwork-ui-test--with-seeded-listing
+    (with-current-buffer patchwork-series-buffer-name
+      (goto-char (point-min))
+      (search-forward "proj2")
+      (beginning-of-line)
+      (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) nil)))
+        (patchwork-series-purge-group-at-point)))
+    (should (patchwork-db-get-series "http://x" 1001))
+    (should (patchwork-db-get-series "http://x" 1002))))
+
+(ert-deftest patchwork-ui-test-purge-not-on-group-header-messages ()
+  (patchwork-ui-test--with-seeded-listing
+    (with-current-buffer patchwork-series-buffer-name
+      (goto-char (point-min))
+      (search-forward "First series")
+      (beginning-of-line)
+      (should-not (patchwork-series-group-at-point))
+      ;; on a series row, not a group header -- should be a no-op, not an error
+      (patchwork-series-purge-group-at-point))
+    (should (patchwork-db-get-series "http://x" 1001))
+    (should (patchwork-db-get-series "http://x" 1002))))
 
 (ert-deftest patchwork-ui-test-detail-keybindings-resolve ()
   (should (eq (lookup-key patchwork-series-detail-mode-map "s")

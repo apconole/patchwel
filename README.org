@@ -219,6 +219,7 @@ already cached without syncing first — handy if something else (e.g.
 | ~R~       | ~patchwork-series-review-at-point~ | Apply the series at point as real commits and open a browsable view of them — see [[*Applying a series and starting a review][Applying a series and starting a review]]. |
 | ~s~       | ~patchwork-series-set-state-at-point~ | Bulk-set the state of every patch in the series at point — see [[*Setting patch/series state and delegate][Setting patch/series state and delegate]]. |
 | ~d~       | ~patchwork-series-set-delegate-at-point~ | Bulk-set the delegate of every patch in the series at point.  |
+| ~k~       | ~patchwork-series-purge-group-at-point~ | On a group header: purge every cached series/patch/comment/check/queued change for that server+project, after confirming — see [[*Purging a project's cached data][Purging a project's cached data]]. |
 | ~n~/~p~   | ~patchwork-series-next~/~-prev~  | Move to the next/previous series row.                         |
 | ~N~/~P~   | ~patchwork-series-next-server~/~-prev-server~ | Move to the next/previous server, skipping over any remaining project groups under the current one. |
 | ~f~       | ~patchwork-series-set-filter~    | Interactively edit the state/server/project/author filter, prefilled with the current values. |
@@ -465,6 +466,26 @@ own, so the directory only grows. Two ways to reclaim that space:
   transition from some other state into one of these — review/apply
   work is presumably done by then. Re-syncing a patch already in a
   terminal state is a no-op, not a repeated deletion attempt.
+
+** Purging a project's cached data
+
+If a project ever gets polled by mistake (e.g. a misconfigured
+~patchwork-servers~ entry or a bad sync run) and you want to remove
+just its cached series/patches/comments/checks without touching any
+other project or server's data, use
+~M-x patchwork-db-purge-project~. It prompts for a server and a
+project slug (completing against whatever's actually cached for that
+server), reports how many series and patches would be removed, asks
+for confirmation, then deletes them along with any queued pending
+change and the project's own row. Scoped by the cached series' own
+project slug, so it also cleans up correctly even if the project was
+queried directly and never got its own row in the local ~projects~
+table.
+
+From the listing buffer, ~k~ on a server+project group header
+(~patchwork-series-purge-group-at-point~) does the same thing without
+leaving the buffer — it prompts for confirmation naming the server and
+project, then purges and redraws.
 
 * Custom hooks
 
