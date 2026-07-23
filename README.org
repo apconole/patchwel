@@ -578,8 +578,17 @@ can drive from a crontab with a headless Emacs, independent of any
 interactive session:
 
 #+begin_src sh
-*/5 * * * * /usr/bin/emacs --batch -l /path/to/patchwel/patchwork-cron-sync.el >> ~/.cache/patchwel/sync.log 2>&1
+*/5 * * * * /usr/bin/flock -n ~/.cache/patchwel/cron-sync.lock /usr/bin/emacs --batch -l /path/to/patchwel/patchwork-cron-sync.el >> ~/.cache/patchwel/sync.log 2>&1
 #+end_src
+
+The ~flock -n~ prefix stops two ticks from ever running at once: if a
+previous sync is still going (e.g. a slow network made it take longer
+than the 5-minute interval), the next tick just skips instead of
+starting a second, overlapping process — see "Overlapping runs" below.
+It needs ~~/.cache/patchwel/~ to already exist, which it will after the
+very first ordinary use of patchwel (or of
+~patchwork-generate-cron-config.el~); create it by hand first if this
+is the very first thing you're setting up.
 
 Before using it, set up ~patchwork-cron-config.el~ — the file
 ~patchwork-cron-sync.el~ loads for its actual ~patchwork-servers~ (and
@@ -661,7 +670,11 @@ exits — no sync, no db access), which in turn comes from your own
 — nothing extra to configure. The local db's WAL journaling and busy
 timeout (already there for cron-vs-interactive concurrency) is exactly
 what also makes it safe for these several processes to write to it at
-once.
+once. Each server gets its own ~flock~ lock file
+(~~/.cache/patchwel/cron-sync-<server>.lock~) internally, so if one
+server's sync is still running when the next tick fires, only *that*
+server's sync is skipped (logged to stderr, so it shows up in
+~sync.log~) — the others still run on schedule.
 
 ~patchwork-cron-sync.el~ itself still works standalone with a specific
 server URL as its argument (everything after Emacs's own ~--~ marker),
@@ -671,6 +684,24 @@ the provided wrapper script:
 #+begin_src sh
 emacs --batch -l /path/to/patchwel/patchwork-cron-sync.el -- https://patchwork.ozlabs.org/api
 #+end_src
+Driving it this way yourself bypasses ~patchwork-cron-sync-parallel.sh~'s
+own per-server locking — add your own if you need it (e.g.
+~flock -n ~/.cache/patchwel/cron-sync-myserver.lock emacs --batch ...~).
+
+** Overlapping runs
+
+Nothing here corrupts the local cache if two sync processes ever do
+end up running at once regardless — every write is an idempotent
+upsert or delete, and the db's WAL journaling plus busy timeout already
+serialize concurrent writers safely. What overlap actually costs,
+without a lock: duplicate network requests to the Patchwork server for
+the same window, and a sync that hits enough write contention to
+exceed the busy timeout just fails that tick's sync outright (logged,
+then self-heals next tick) rather than merging cleanly with the
+still-running one. ~flock -n~, as set up above, avoids all of that by
+making an overlapping tick a no-op (it exits immediately, logging
+nothing beyond ~flock~ itself declining to run) instead of a second,
+competing process.
 
 * Appendix: a minimal mail-sending setup
 

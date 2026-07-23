@@ -140,6 +140,33 @@ write cleanly to the same WAL-mode db with no locking errors; the
 no-argument (serial, unchanged-default) mode still works exactly as
 before.
 
+* DONE Guard against overlapping cron sync runs with flock
+
+Neither invocation style had anything preventing two ticks from
+running at once for the same server (e.g. a slow network making one
+sync take longer than the cron interval). Nothing here corrupted the
+db either way -- every write is an idempotent upsert or delete, and
+WAL journaling plus the busy timeout already serialize concurrent
+writers safely -- but an overlap wasted a duplicate round of network
+requests, and heavy enough write contention could exceed the busy
+timeout and fail that tick's sync outright.
+
+Fixed with plain `flock', not a hand-rolled PID-file scheme -- the OS
+releases a flock automatically when the holding process exits or dies,
+so there's no stale-lock cleanup logic to get wrong, unlike a PID file
+(which needs its own "is that PID still alive" check to recover from a
+crashed holder). The plain single-process crontab entry now recommends
+a `flock -n' prefix directly (README.org); `patchwork-cron-sync-
+parallel.sh' takes its own per-server lock internally (one lock file
+per server URL, via the `exec {fd}>lockfile; flock -n "$fd"' idiom),
+so one server's sync being slow only skips that server's next tick,
+not every server's.
+
+Verified: two overlapping invocations for the same server -- the
+second sees the lock held and skips (logged) while the first runs to
+completion; two different servers' locks are independent and both run
+concurrently as before.
+
 * DONE tmt-based test suite with a mock Patchwork server and CI
 
 74 ~ert-deftest~ tests across 9 areas (~tests/test-db.el~,

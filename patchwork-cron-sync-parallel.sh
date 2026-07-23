@@ -15,12 +15,22 @@
 # The server list is never duplicated here -- it's read from
 # patchwork-cron-sync.el itself (via --list-servers) every run, so
 # editing patchwork-servers in that one file is all that's ever needed.
+#
+# Each server's sync is individually guarded by its own flock lock file,
+# so a slow network making one tick's sync for a server still running
+# when the next tick fires just skips that server that tick (logged),
+# rather than running a second, overlapping process for it -- see
+# "Overlapping runs" in README.org for why that matters even though the
+# db itself is already safe against concurrent writers.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYNC_EL="$SCRIPT_DIR/patchwork-cron-sync.el"
 EMACS="${EMACS:-emacs}"
+LOCK_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/patchwel"
+
+mkdir -p "$LOCK_DIR"
 
 mapfile -t SERVER_URLS < <("$EMACS" -Q --batch -l "$SYNC_EL" -- --list-servers)
 
@@ -29,9 +39,22 @@ if [ "${#SERVER_URLS[@]}" -eq 0 ]; then
   exit 1
 fi
 
+sync_one() {
+  local url="$1"
+  local key
+  key=$(printf '%s' "$url" | tr -c 'A-Za-z0-9' '_')
+  local lock_fd
+  exec {lock_fd}>"$LOCK_DIR/cron-sync-$key.lock"
+  if ! flock -n "$lock_fd"; then
+    echo "patchwork-cron-sync-parallel: sync for $url already running, skipped" >&2
+    return 0
+  fi
+  "$EMACS" -Q --batch -l "$SYNC_EL" -- "$url"
+}
+
 pids=()
 for url in "${SERVER_URLS[@]}"; do
-  "$EMACS" -Q --batch -l "$SYNC_EL" -- "$url" &
+  sync_one "$url" &
   pids+=("$!")
 done
 
